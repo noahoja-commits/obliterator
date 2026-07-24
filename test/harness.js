@@ -52,9 +52,15 @@ async function boot({ storage = null, now = Date.now(), render = false, env = nu
       win.HTMLCanvasElement.prototype.getContext = stubCtx;
       win.AudioContext = win.webkitAudioContext = function () { throw new Error('no audio'); };
       /* Real rAF, on a timer. The app's frame() bails on `!W` and jsdom reports
-         a zero-width canvas, so the render loop costs nothing — but anything
-         else driven by rAF (the fire hold) actually runs. */
-      win.requestAnimationFrame = fn => win.setTimeout(() => fn(win.performance.now()), 16);
+         a zero-width canvas, so without a viewport the loop costs nothing — but
+         anything else driven by rAF (the fire hold) actually runs.
+         With a viewport (render:true) each frame runs the software raytrace,
+         which is heavy; firing it every 16ms starves Node's timers and makes
+         the app's own setTimeout-scheduled stages drift. The app caps itself to
+         30fps when idle anyway, so a 40ms rAF loses nothing visible and leaves
+         the event loop free for the timers the tests are watching. */
+      const rafMs = render ? 40 : 16;
+      win.requestAnimationFrame = fn => win.setTimeout(() => fn(win.performance.now()), rafMs);
       win.cancelAnimationFrame = id => win.clearTimeout(id);
       win.__OBLITERATOR_TEST__ = true;   // unlocks the app's window.__app test hook
       if (storage) win.localStorage.setItem('obliterator:state', JSON.stringify(storage));

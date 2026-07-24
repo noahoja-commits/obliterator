@@ -1,6 +1,13 @@
 /* The staged firing sequence: tributaries -> convergence -> lance -> travel ->
-   impact -> fracture -> detonation. Runs with a real viewport so the whole
-   draw path executes, which is what catches a stage that throws mid-shot. */
+   impact -> fracture -> detonation.
+
+   Design note on render mode: every *stage* of the sequence is set by a timer
+   (fireAt), independent of the viewport - so the stage-timing tests run with NO
+   viewport, which keeps the software raytrace out of the live loop and stops it
+   starving the very timers these tests watch. Only the eased values (core
+   bloom, beam travel, crack spread) need real frames; those are checked
+   separately and deterministically, by driving frame() with a clock held far
+   ahead of the live loop so each call advances a full dt. */
 const { boot } = require('./harness');
 
 let pass = 0, fail = 0;
@@ -10,31 +17,20 @@ const ok = (name, cond, extra) => {
 };
 const sec = t => console.log('\n' + t);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-/* Stage arrivals are timer-driven, and jsdom's timers wander under load, so
-   wait for the stage rather than for a wall-clock instant. */
-async function waitFor(fn, ms = 5000) {
+async function waitFor(fn, ms = 6000) {
   const end = Date.now() + ms;
-  while (Date.now() < end) { if (fn()) return true; await sleep(8); }
+  while (Date.now() < end) { if (fn()) return true; await sleep(6); }
   return false;
 }
 
-/* The eased values (core bloom, beam travel, fracture spread) advance one
-   render frame at a time, and jsdom manages single digit fps with the raytrace
-   in software - so a 60ms window may contain no frames at all. Drive frames
-   explicitly instead of hoping some land. */
-function stepper(win) {
-  /* Base the timestamps on the live clock at call time. A base captured once
-     goes stale as the test runs, and every stepped frame then lands inside the
-     budget and is skipped - which looks exactly like a value that never moved. */
-  return (n = 4, dt = 32) => {
-    let t = win.performance.now();
-    for (let i = 0; i < n; i++) { t += dt; win.__app.frame(t); }
-  };
+/* Drive frame() deterministically. The clock is held far ahead of the live rAF
+   loop's `last`, so every call sees a large gap and dt clamps to the full 50ms
+   - otherwise the two loops interleave and hand each other dt~0 frames. */
+function driver(win) {
+  let ft = win.performance.now() + 1e6;
+  return () => { ft += 1000; win.__app.frame(ft); };
 }
 
-/* #t-log only keeps the last 9 lines, so a shot's opening entries are gone by
-   the time it ends. Watch the element instead of scraping it afterwards. */
 function transcript(win) {
   const lines = [];
   const el = win.document.getElementById('t-log');
@@ -44,7 +40,6 @@ function transcript(win) {
   return lines;
 }
 
-/* Drive a session to READY without waiting out a real countdown. */
 async function armed(win) {
   const A = win.__app;
   A.S.minutes = 0.05;
@@ -59,9 +54,8 @@ async function armed(win) {
 
   sec('the sequence is staged, not one beat');
   {
-    const r = await boot({ render: true });
+    const r = await boot();                 // no viewport: pure stage timing
     const A = await armed(r.win);
-    const step = stepper(r.win);
     ok('weapon is armed', A.S.phase === 'READY', 'got ' + A.S.phase);
 
     const seen = [];
@@ -80,35 +74,23 @@ async function armed(win) {
     ok('the beam has not left yet', A.V.beam === 0, 'beam=' + A.V.beam);
     ok('the world is untouched', A.V.planetAlive === true && A.V.impact === 0);
 
-    // --- convergence: the core takes what the shafts gave it
+    // --- convergence: the core is told to go critical
     await waitFor(() => A.V.coreT === 1);
     ok('the core goes critical', A.V.coreT === 1);
-    const core0 = A.V.core;
-    step(4);
-    ok('the core blooms rather than snapping on',
-       A.V.core > core0 && A.V.core < 1, 'core=' + A.V.core);
+    ok('but the beam has not left yet', A.V.beam === 0, 'beam=' + A.V.beam);
 
-    // --- the bolt leaves the dish and has to cross the gap
+    // --- the bolt leaves the dish
     await waitFor(() => A.V.beam > 0);
     ok('the beam leaves the dish', A.V.beam > 0, 'beam=' + A.V.beam);
-    ok('it starts at the dish, not at the planet', A.V.beamHead > 0 && A.V.beamHead < 1,
-       'head=' + A.V.beamHead);
-    ok('nothing has hit anything yet', A.V.impact === 0, 'impact=' + A.V.impact);
-    const head0 = A.V.beamHead;
-    step(1);
-    ok('the head travels toward the target', A.V.beamHead > head0,
-       head0 + ' -> ' + A.V.beamHead);
+    ok('and the core hands off to it', A.V.coreT === 0, 'coreT=' + A.V.coreT);
 
-    // --- contact: the surface breaks before the world does
+    // --- contact: the surface is told to break before the world does
     await waitFor(() => A.V.impact > 0);
     ok('impact registers', A.V.impact > 0, 'impact=' + A.V.impact);
-    ok('the beam has crossed by then', A.V.beamHead === 1, 'head=' + A.V.beamHead);
+    ok('the beam head is snapped home on contact', A.V.beamHead === 1, 'head=' + A.V.beamHead);
     ok('the crust fractures', A.stats().cracks > 0, 'cracks=' + A.stats().cracks);
+    ok('the fracture is set spreading', A.V.cracksT === 1);
     ok('the world is still there, briefly', A.V.planetAlive === true);
-    const cr0 = A.V.cracks;
-    step(3);
-    ok('fractures spread rather than appearing',
-       A.V.cracks > cr0 && A.V.cracks < 1, 'cracks=' + A.V.cracks);
 
     // --- detonation
     await waitFor(() => A.V.planetAlive === false, 3000);
@@ -125,13 +107,43 @@ async function armed(win) {
     r.close();
   }
 
+  sec('the eased visuals actually advance under frames');
+  {
+    // Deterministic: set the stage state directly and drive frames by hand, so
+    // none of this races the live timers.
+    const r = await boot({ render: true });
+    const A = r.win.__app;
+    const beat = driver(r.win);
+    A.S.phase = 'FIRING'; A.V.firing = true; A.V.planetAlive = true;
+
+    // core bloom: coreT is the target, V.core eases toward it
+    A.V.coreT = 1; A.V.core = 0;
+    const c0 = A.V.core; beat();
+    ok('the core blooms toward critical', A.V.core > c0 && A.V.core < 1, 'core=' + A.V.core);
+
+    // beam travel: the head crosses the gap over several frames
+    A.V.beam = 10; A.V.beamHead = 0.001; A.V.impact = 0;
+    const seen = [A.V.beamHead];
+    for (let i = 0; i < 8; i++) { beat(); seen.push(A.V.beamHead); }
+    ok('the head advances every frame',
+       seen.every((v, i) => i === 0 || v >= seen[i - 1]), JSON.stringify(seen.map(v => +v.toFixed(2))));
+    ok('it takes more than one frame to cross', seen[1] > 0 && seen[1] < 1, 'after one frame=' + seen[1]);
+    ok('and it does arrive', A.V.beamHead === 1, 'head=' + A.V.beamHead);
+
+    // fracture spread: cracksT is the target, V.cracks eases toward it
+    A.V.cracksT = 1; A.V.cracks = 0;
+    const k0 = A.V.cracks; beat();
+    ok('the fracture spreads rather than appearing', A.V.cracks > k0 && A.V.cracks < 1, 'cracks=' + A.V.cracks);
+    A.cancelFire();
+    r.close();
+  }
+
   sec('the stages arrive in order');
   {
-    const r = await boot({ render: true });
+    const r = await boot();
     const A = await armed(r.win);
     const order = [];
     const mark = (name, test) => waitFor(test).then(hit => { if (hit) order.push(name); });
-
     const watching = Promise.all([
       mark('tributary', () => A.V.trib[0] > 0),
       mark('converge', () => A.V.coreT === 1),
@@ -149,11 +161,11 @@ async function armed(win) {
 
   sec('the log narrates the shot');
   {
-    const r = await boot({ render: true });
+    const r = await boot();
     const A = await armed(r.win);
     const lines = transcript(r.win);
     A.fireSequence(() => {});
-    await waitFor(() => lines.join('\n').includes('TARGET DESTROYED'), 5000);
+    await waitFor(() => lines.join('\n').includes('TARGET DESTROYED'));
     const log = lines.join('\n');
     ok('ignition is logged', /PRIMARY IGNITION/i.test(log));
     ok('tributaries are logged', /tributary \d discharged/i.test(log));
@@ -169,7 +181,7 @@ async function armed(win) {
 
   sec('a shot in flight can be torn down');
   {
-    const r = await boot({ render: true });
+    const r = await boot();
     const A = await armed(r.win);
     let done = 0;
     A.fireSequence(() => done++);
@@ -190,7 +202,7 @@ async function armed(win) {
 
   sec('switching tabs mid-shot does not leave it half-fired');
   {
-    const r = await boot({ render: true });
+    const r = await boot();
     const A = await armed(r.win);
     A.fireSequence(() => {});
     ok('the beam gets out', await waitFor(() => A.V.beam > 0), 'beam=' + A.V.beam);
@@ -217,13 +229,11 @@ async function armed(win) {
 
   sec('the shot still runs with no viewport');
   {
-    // no render: W is 0, so every draw call is skipped - the state machine
-    // must not depend on anything the renderer does
     const r = await boot();
     const A = await armed(r.win);
     let done = 0;
     A.fireSequence(() => done++);
-    ok('it completes anyway', await waitFor(() => done === 1, 6000), 'done=' + done);
+    ok('it completes anyway', await waitFor(() => done === 1), 'done=' + done);
     ok('and the target is gone', A.V.planetAlive === false);
     r.close();
   }

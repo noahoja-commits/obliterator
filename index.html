@@ -1435,22 +1435,78 @@ function drawPlanet(cx,cy,R,t,dt){
   g.restore(); g.globalAlpha=1;
 }
 
-/* --- FLEET: the rest of the target system, sized by balance --- */
-function drawFleet(t){
+/* --- FLEET: the rest of the target system ---
+   Not a column of dots any more. Each remaining world is a body on its own
+   orbit, with a lit day-side, a terminator, and running lights that flicker on
+   their own clocks. Geometry is stored as fractions of the viewport and
+   resolved at draw time, because W/H can be zero when the fleet is built. */
+function decorateFleet(list){
+  return list.slice(0,4).map((b,i)=>{
+    // a stable per-body seed so a world keeps its look between frames
+    const seed=(i*131 + (b.label?b.label.length:0)*17 + 3)%997;
+    const lights=[]; const nL=2+Math.floor(rand(0,3));
+    for(let k=0;k<nL;k++){ const a=rand(0,TAU), rr=rand(.2,.72);
+      lights.push({ lx:Math.cos(a)*rr, ly:Math.sin(a)*rr, ph:rand(0,TAU), sp:rand(1.4,3.1) }); }
+    return {
+      r:b.r, label:b.label, seed, lights,
+      ox:.52+i*.05, oy:.16+i*.13,           // orbit centre, fraction of W/H
+      ax:.028+((seed%5)*.006), ay:.02+((seed%3)*.006),  // ellipse semi-axes, fraction of min(W,H)
+      period:9000+seed*38, phase:seed*1.7,  // ms per orbit + start angle
+      tilt:seed*.9,                         // ellipse rotation
+      spin:(seed%2?1:-1)*.00013,            // own-axis rotation of the lit face
+      hue:(seed%3),                         // 0 rock · 1 warmer · 2 cooler
+      react:0                               // transient flinch when a sibling dies
+    };
+  });
+}
+const FLEET_PAL=[['#7E6448','#4B3826'],['#8A5A3A','#4A2C1E'],['#5A6478','#2C3444']];
+function fleetReact(amp){ for(const b of V.fleet) b.react=Math.max(b.react||0,amp); }
+function drawFleet(t,dt){
   if(!V.fleet.length) return;
+  const M=Math.min(W,H);
   for(let i=0;i<V.fleet.length;i++){
     const b=V.fleet[i];
-    const ang=t*.00007 + i*2.4;
-    const x=W*.60 + Math.cos(ang)*W*.055;
-    const y=H*.20 + i*(H*.115) + Math.sin(ang)*6;
-    const r=b.r;
-    const grd=g.createRadialGradient(x-r*.34,y-r*.32,r*.06,x,y,r);
-    grd.addColorStop(0,'#7E6448'); grd.addColorStop(.5,'#4B3826');
-    grd.addColorStop(1,'#0C0908');
-    g.globalAlpha=.55; g.beginPath(); g.arc(x,y,r,0,TAU); g.fillStyle=grd; g.fill();
-    g.globalAlpha=.28; g.strokeStyle='#C8A06E'; g.lineWidth=1; g.stroke();
+    const ang=b.phase + t/b.period*TAU;
+    // point on the tilted ellipse
+    const ex=Math.cos(ang)*b.ax*M, ey=Math.sin(ang)*b.ay*M;
+    const ct=Math.cos(b.tilt), st=Math.sin(b.tilt);
+    let x=b.ox*W + ex*ct - ey*st;
+    let y=b.oy*H + ex*st + ey*ct;
+    if(b.react>.001){                        // a nudge from a nearby detonation
+      x+=Math.sin(t*.05+b.seed)*b.react*4; y+=Math.cos(t*.05+b.seed)*b.react*4;
+      b.react*=Math.pow(.9, dt/16.667);
+    }
+    const r=b.r, pal=FLEET_PAL[b.hue];
+    g.save();
+    // faint atmosphere on the larger bodies
+    if(r>9){ const ah=g.createRadialGradient(x,y,r*.85,x,y,r*1.35);
+      ah.addColorStop(0,'rgba(150,180,210,.14)'); ah.addColorStop(1,'rgba(150,180,210,0)');
+      g.beginPath(); g.arc(x,y,r*1.35,0,TAU); g.fillStyle=ah; g.fill(); }
+    // the body, lit from the same side as everything else (upper-left)
+    const grd=g.createRadialGradient(x-r*.36,y-r*.34,r*.05,x,y,r);
+    grd.addColorStop(0,pal[0]); grd.addColorStop(.5,pal[1]); grd.addColorStop(1,'#0C0908');
+    g.globalAlpha=.62; g.beginPath(); g.arc(x,y,r,0,TAU); g.fillStyle=grd; g.fill();
+    // terminator: night side falling off toward lower-right
+    g.save(); g.beginPath(); g.arc(x,y,r,0,TAU); g.clip();
+    const tg=g.createLinearGradient(x-r,y-r,x+r,y+r);
+    tg.addColorStop(0,'rgba(6,8,12,0)'); tg.addColorStop(.55,'rgba(6,8,12,.15)'); tg.addColorStop(1,'rgba(6,8,12,.8)');
+    g.fillStyle=tg; g.fillRect(x-r,y-r,r*2,r*2);
+    // running lights, each on its own flicker clock, day-side only
+    const cs=Math.cos(b.spin*t), sn=Math.sin(b.spin*t);
+    for(const L of b.lights){
+      const lx=L.lx*cs - L.ly*sn, ly=L.lx*sn + L.ly*cs;
+      if(lx+ly> .5) continue;                // hidden on the night side
+      const fl=.35+.65*Math.pow(Math.sin(t*.001*L.sp+L.ph)*.5+.5,3);
+      g.globalAlpha=.5*fl; g.fillStyle='#F0B267';
+      g.beginPath(); g.arc(x+lx*r, y+ly*r, 1.1, 0, TAU); g.fill();
+    }
+    g.restore();
+    // rim + label
+    g.globalAlpha=.3; g.strokeStyle='#C8A06E'; g.lineWidth=1;
+    g.beginPath(); g.arc(x,y,r,0,TAU); g.stroke();
     g.globalAlpha=.5; g.font='8px "Share Tech Mono",monospace'; g.fillStyle='#5E6670';
     g.textAlign='left'; g.fillText(b.label, x+r+7, y+3);
+    g.restore();
   }
   g.globalAlpha=1; g.textAlign='start';
 }
@@ -1681,7 +1737,7 @@ const IDLE_MS = 33, BUSY_MS = 0, CALM_MS = 66;
 function sceneBusy(){
   return V.firing || V.beam>0 || V.impact>0 || V.manual || V.shake>.01 || V.flash>.01
       || V.core>.01 || V.cracks>.01 || V.trib.some(x=>x>0)
-      || V.siege || salvo.length>0
+      || V.siege || salvo.length>0 || V.fleet.some(b=>b.react>.02)
       || debris.length>0 || parts.length>0 || rings.length>0
       || Math.abs(V.charge - (S.mode==='focus' ? (S.total?(S.total-S.left)/S.total:0) : S.charge))>.002;
 }
@@ -1746,7 +1802,7 @@ function frame(t){
 
   drawPlanet(PX,PY,PR,t,dt);
   if(V.planetAlive) drawCracks(PX,PY,PR,V.cracks);
-  drawFleet(t);
+  drawFleet(t,dt);
   drawReticle(PX,PY,PR,t);
 
   const dish=drawStation(SX,SY,SR,V.charge,V.solution,t);
@@ -2360,8 +2416,8 @@ function renderAdvisory(){
 /* --- bombardment queue --- */
 function syncFleetFromQueue(){
   if(S.mode!=='focus') return;
-  V.fleet = (S.phase==='IDLE'?[]:S.queue.slice(0,4)).map((q,i)=>({
-    r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() }));
+  V.fleet = decorateFleet((S.phase==='IDLE'?[]:S.queue.slice(0,4)).map((q,i)=>({
+    r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() })));
 }
 function renderQueue(){
   const el=$('queue-list');
@@ -2739,6 +2795,7 @@ function fireSequence(onDone){
     burst(PX,PY,180,1.6);
     spawnDebris(PX,PY,44,PR);
     ring(PX,PY,Math.max(W,H)*1.1,'#D6FFE6');
+    fleetReact(1);                     // the rest of the system feels the shockwave
     A.stopHum(); pushLog('TARGET DESTROYED');
   });
   fireAt(FIRE.BREAK+160,()=>ring(PX,PY,Math.max(W,H)*.8,'#8CFFB8'));
@@ -2814,7 +2871,7 @@ function focusAcquire(){
   S.deadline=Date.now()+S.left*1000;
   S.phase='CHARGING'; S.litShafts=-1;
   V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.planetTo=1; V.craters=[];
-  V.fleet=S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() }));
+  V.fleet=decorateFleet(S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() })));
   $('target').disabled=true; $('abort').disabled=false; $('hold').disabled=false;
   S.surged=false; S.t0=Date.now(); S.checkpoint=Date.now();
   document.querySelectorAll('#durations button').forEach(b=>b.disabled=true);
@@ -2865,9 +2922,9 @@ function lockTarget(){
   S.charge=clamp(1-t.balance/t.original,0,1);
   V.planetAlive=true; V.planetOpacity=1; V.planetR=.45+(t.balance/t.original)*.55; V.planetTo=V.planetR;
   V.craters=cratersFor(t);
-  V.fleet=S.debts.filter(d=>d.balance>.005 && d.id!==t.id).slice(0,4).map(d=>({
+  V.fleet=decorateFleet(S.debts.filter(d=>d.balance>.005 && d.id!==t.id).slice(0,4).map(d=>({
     r: 5+clamp(d.balance/Math.max(t.original,1),0,1.6)*11,
-    label: d.name.slice(0,14).toUpperCase()+' '+money(d.balance) }));
+    label: d.name.slice(0,14).toUpperCase()+' '+money(d.balance) })));
   $('payment').disabled=false;
   $('t-desig').textContent=t.code; $('t-class').textContent='DEBT BODY';
   $('t-mass').textContent=money(t.balance);
@@ -3018,7 +3075,7 @@ function restoreSession(sess,why){
   $('t-mass').textContent=(rand(4.2,7.9)).toFixed(2)+'e24 KG';
   $('t-integ').textContent=Math.round((S.left/S.total)*100)+'%';
   V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.planetTo=1; V.craters=[];
-  V.fleet=S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() }));
+  V.fleet=decorateFleet(S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() })));
   aimAt();
   renderStrike(); renderCharge(); renderAdvisory(); renderProcessor();
 
@@ -3536,6 +3593,7 @@ if(typeof window!=='undefined' && window.__OBLITERATOR_TEST__)
     abort,abortDisarm,importBackup,ask,aiFail,offline,sceneBusy,syncWake,wantsWake,frame,
     REDUCED, fireSequence, cancelFire, FIRE, focusFire,
     lockTarget, logPayment, debtFire, addDebt, siegeStrike, cancelSiege, pickTarget, etaLabel,
+    decorateFleet, fleetReact, drawFleet,
     stats:()=>({planetPasses,frames,cracks:cracks.length,debris:debris.length,rings:rings.length,salvo:salvo.length,salvoSpawned})};
 })();
 
