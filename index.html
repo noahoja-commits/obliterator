@@ -550,7 +550,8 @@ input[type=date]:focus{border-color:#2E353D;border-left-color:var(--amber-lit)}
       </div>
       <div class="bar"><div class="bar-fill"></div>
         <div class="bar-ticks"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
-      <div class="clock" id="clock-line">Time to fire <b id="clock">--:--</b></div>
+      <!-- one line, two readouts: the modes must not overwrite each other's markup -->
+      <div class="clock" id="clock-line"><span id="clock-focus">Time to fire <b id="clock">--:--</b></span><span id="clock-proj" class="hidden">Projection <b id="clock-eta">—</b></span></div>
       <div class="advisory" id="advisory">Load objectives and I'll size the session from your own history.</div>
     </div>
 
@@ -784,6 +785,8 @@ const S = {
   objectives:[], intel:[], paused:false, surged:false,
   log:[], t0:0, checkpoint:0, depth:3,
   queue:[], deferred:[], lastExport:0,
+  /* a focus session parked while you're on the Debt Star tab */
+  focusHold:null,
   /* deadline is the source of truth for the countdown — S.left is derived from
      it. Decrementing S.left per tick drifts badly on iOS, which throttles and
      then suspends timers whenever the app is backgrounded or the screen locks. */
@@ -804,16 +807,22 @@ function craterFromSeed(seed){
   return { x:cl*Math.cos(lon), y:Math.sin(lat), z:cl*Math.sin(lon), cos:Math.cos(0.34) };
 }
 function cratersFor(d){ return (d.craters||[]).slice(-14).map(craterFromSeed); }
+/* The live focus session, in the one shape both persist() and the mode switch use.
+   Debt Star reuses S.phase/S.name/S.code for its own target, so a focus session
+   can't just sit in S while you're on the other tab — it gets snapshotted out
+   and rebuilt on the way back. FIRING is mid-animation and not worth capturing. */
+function sessionBlob(){
+  if(!S.name || S.phase==='IDLE' || S.phase==='FIRING') return null;
+  return { name:S.name, code:S.code, phase:S.phase, total:S.total, left:S.left,
+    deadline:S.deadline, t0:S.t0, checkpoint:S.checkpoint,
+    surged:S.surged, paused:S.paused, objectives:S.objectives };
+}
 async function persist(){ await Store.save({kills:S.kills,debts:S.debts,mode:S.mode,
   minutes:S.minutes,strategy:S.strategy,allTime:S.allTime,intel:S.intel,log:S.log,depth:S.depth,queue:S.queue,deferred:S.deferred,
   lastExport:S.lastExport||0,
   /* A live session is worth saving on its own: reload the tab or let iOS evict
      it and an AI breakdown you just generated would otherwise be gone. */
-  session: S.mode==='focus'&&S.phase!=='IDLE' ? {
-    name:S.name, code:S.code, phase:S.phase, total:S.total, left:S.left,
-    deadline:S.deadline, t0:S.t0, checkpoint:S.checkpoint,
-    surged:S.surged, paused:S.paused, objectives:S.objectives
-  } : null }); }
+  session: S.mode==='focus' ? sessionBlob() : (S.focusHold||null) }); }
 
 /* firing solution: objectives if defined, otherwise the reactor alone */
 function solutionPct(){
@@ -2317,7 +2326,7 @@ function lockTarget(){
   if(!t){
     S.phase='IDLE'; S.charge=0; V.aimLock=false; V.reticle=0;
     V.planetAlive=false; V.fleet=[]; V.craters=[]; $('payment').disabled=true;
-    $('clock-line').innerHTML='Projection <b>—</b>';
+    $('clock-eta').textContent='—'; $('clock-proj').style.color='';
     ['t-desig','t-class','t-mass','t-integ'].forEach(i=>$(i).textContent='—');
     say(S.debts.length?'System cleared. Every body destroyed.':'No bodies in system. Add a debt to begin.',
       S.debts.length?'hot':null);
@@ -2335,8 +2344,8 @@ function lockTarget(){
   $('t-mass').textContent=money(t.balance);
   $('t-integ').textContent=Math.round((t.balance/t.original)*100)+'%';
   const eta=etaLabel(t);
-  $('clock-line').innerHTML=`Projection <b>${eta.text}</b>`;
-  $('clock-line').style.color=eta.never?'var(--alarm)':'';
+  $('clock-eta').textContent=eta.text;
+  $('clock-proj').style.color=eta.never?'var(--alarm)':'';
   aimAt(); A.startHum();
   say(`${t.code} locked — ${S.strategy==='snowball'?'smallest balance':'highest interest rate'}. ${money(t.balance)} to destruction.`);
   pushLog(`siege target ${t.code} locked`);
@@ -2359,8 +2368,8 @@ function logPayment(){
   } else {
     grazeShot(.45+(t.balance/t.original)*.55);
     const eta=etaLabel(t);
-    $('clock-line').innerHTML=`Projection <b>${eta.text}</b>`;
-    $('clock-line').style.color=eta.never?'var(--alarm)':'';
+    $('clock-eta').textContent=eta.text;
+    $('clock-proj').style.color=eta.never?'var(--alarm)':'';
     renderCharge(); renderRoster(); persist();
     say(`Direct hit. ${money(amt)} absorbed — ${money(t.balance)} of hull remaining.`);
     pushLog(`hull breach · ${money(amt)}`);
@@ -2417,12 +2426,14 @@ function resetWeapon(keepMsg){
   if(!keepMsg) say('Awaiting target designation.');
 }
 
-/* Put a saved session back on screen. Must run AFTER setMode, because
-   setMode('focus') calls resetWeapon() and would wipe whatever we restored. */
-function restoreSession(sess){
+/* Put a saved session back on screen — used both on boot and on the way back
+   from the Debt Star tab. Must run AFTER resetWeapon(), which clears the shared
+   readouts the other mode may have written. `why` only picks the wording. */
+function restoreSession(sess,why){
   if(!sess||!sess.name||!sess.total||S.mode!=='focus') return false;
+  const back=why==='returned';
   S.name=sess.name; S.code=sess.code||designation();
-  S.total=sess.total||0; S.surged=!!sess.surged;
+  S.total=sess.total||0; S.surged=!!sess.surged; S.litShafts=-1;
   S.t0=sess.t0||0; S.checkpoint=sess.checkpoint||0;
   S.objectives=Array.isArray(sess.objectives)?sess.objectives:[];
 
@@ -2448,20 +2459,24 @@ function restoreSession(sess){
   renderStrike(); renderCharge(); renderAdvisory(); renderProcessor();
 
   if(S.phase==='HOLD'){
-    say(`Session restored — ${S.code} still on hold. ${mmss(S.left)} of charge preserved.`);
-    pushLog('session restored · reactor on hold');
+    say(back
+      ? `Back on ${S.code} — still on hold, ${mmss(S.left)} of charge preserved.`
+      : `Session restored — ${S.code} still on hold. ${mmss(S.left)} of charge preserved.`);
+    pushLog((back?'session resumed':'session restored')+' · reactor on hold');
   } else if(S.left<=0){
-    // the countdown ran out while the app was closed; arm rather than pretend
+    // the countdown ran out while we were away; arm rather than pretend otherwise
     S.deadline=0;
-    pushLog('session restored · reactor reached capacity while away');
+    pushLog((back?'session resumed':'session restored')+' · reactor reached capacity while away');
     checkArm();
   } else {
     A.startHum();
     S.tick=setInterval(tickFocus,1000);
-    say(`Session restored. ${S.code} still charging — ${mmss(S.left)} remaining.`);
-    pushLog('session restored · '+S.code);
+    say(back
+      ? `Back on ${S.code} — ${mmss(S.left)} remaining.`
+      : `Session restored. ${S.code} still charging — ${mmss(S.left)} remaining.`);
+    pushLog((back?'session resumed · ':'session restored · ')+S.code);
   }
-  persist();   // setMode() ran resetWeapon() just before us and saved an empty session
+  persist();   // resetWeapon() ran just before us and would otherwise have saved an empty session
   return true;
 }
 function toggleHold(){
@@ -2490,8 +2505,13 @@ function abort(){
   resetWeapon(true);
 }
 function setMode(m){
+  const prev=S.mode;
+  // leaving the Obliterator tab: park the session instead of destroying it
+  if(prev==='focus' && m!=='focus') S.focusHold=sessionBlob();
   S.mode=m; clearInterval(S.tick); S.tick=null; A.stopHum(); A.klaxon(false);
   S.critical=false; $('critband').classList.remove('on');
+  $('clock-focus').classList.toggle('hidden',m!=='focus');
+  $('clock-proj').classList.toggle('hidden',m==='focus');
   document.querySelectorAll('#modes button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.mode===m)));
   $('focus-input').classList.toggle('hidden',m!=='focus');
   $('debt-input').classList.toggle('hidden',m!=='debt');
@@ -2507,7 +2527,13 @@ function setMode(m){
   renderAdvisory(); renderProcessor();
   $('fire').disabled=true; $('fire').classList.remove('live'); $('cover').classList.remove('open');
   V.beam=0; V.impact=0;
-  if(m==='focus'){ S.lockedId=null; resetWeapon(); }
+  if(m==='focus'){
+    S.lockedId=null;
+    // coming back to a parked session: rebuild it rather than starting over
+    const held=S.focusHold; S.focusHold=null;
+    resetWeapon(!!held);                       // clears debt-mode leftovers either way
+    if(held) restoreSession(held,'returned');
+  }
   else { $('target').disabled=false; renderRoster(); lockTarget(); }
   persist();
 }
@@ -2701,6 +2727,9 @@ function runBoot(done){
   runBoot(()=>{
     setMode(urlMode==='debt'?'debt':(urlMode==='focus'?'focus':(saved&&saved.mode==='debt'?'debt':'focus')));
     const resumed=restoreSession(saved&&saved.session);
+    // booted straight into Debt Star with a session still live: park it so
+    // switching to the Obliterator tab picks it up instead of losing it
+    if(!resumed && saved && saved.session) S.focusHold=saved.session;
     renderCharge();
     const due=S.deferred.filter(d=>dayDiff(d.due)<=0);
     if(due.length){
@@ -2723,7 +2752,7 @@ addEventListener('visibilitychange',()=>{
 
 /* test hook — inert in the browser, lets the jsdom harness drive the real code */
 if(typeof window!=='undefined' && window.__OBLITERATOR_TEST__)
-  window.__app={S,V,focusAcquire,tickFocus,toggleHold,toggleObjective,persist,restoreSession,inArtifact,resetWeapon};
+  window.__app={S,V,setMode,focusAcquire,tickFocus,toggleHold,toggleObjective,persist,restoreSession,inArtifact,resetWeapon};
 })();
 
 /* ---- PWA registration ---- */
