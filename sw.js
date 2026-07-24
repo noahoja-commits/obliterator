@@ -5,7 +5,7 @@
      · /api/*     -> never cached, always network (AI calls must be live)
    Bump CACHE when you deploy or clients will keep the old shell. */
 
-const CACHE = 'obliterator-v1';
+const CACHE = 'obliterator-v2';
 
 const SHELL = [
   './',
