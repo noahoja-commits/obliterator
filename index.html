@@ -894,6 +894,29 @@ async function persist(){ await Store.save({kills:S.kills,debts:S.debts,mode:S.m
      it and an AI breakdown you just generated would otherwise be gone. */
   session: S.mode==='focus' ? sessionBlob() : (S.focusHold||null) }); }
 
+/* ---- screen wake lock ----
+   Completion is announced in-app only — there is no way to notify a closed iOS
+   PWA (timers suspend when backgrounded, and no browser ships Notification
+   Triggers; a real background alert would need a push server). So the next best
+   thing is to stop the screen sleeping while the reactor is charging, and you
+   actually see it arm. Supported from iOS 16.4; a silent no-op everywhere else.
+   The OS drops the lock whenever the page is hidden, hence the re-acquire. */
+let wakeLock=null;
+async function requestWake(){
+  if(!navigator.wakeLock || wakeLock) return;
+  try{
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release',()=>{ wakeLock=null; });
+  }catch(e){ wakeLock=null; }   // denied, low battery, or unsupported — not worth surfacing
+}
+function releaseWake(){
+  if(!wakeLock) return;
+  const w=wakeLock; wakeLock=null;
+  try{ w.release(); }catch(e){}
+}
+function wantsWake(){ return S.mode==='focus' && S.phase==='CHARGING'; }
+function syncWake(){ wantsWake() ? requestWake() : releaseWake(); }
+
 /* firing solution: objectives if defined, otherwise the reactor alone */
 function solutionPct(){
   if(S.mode!=='focus' || !S.objectives.length) return null;
@@ -913,6 +936,11 @@ function resize(){
 }
 addEventListener('resize',resize);
 
+/* Frame scale: 1 at 60fps, 2 at 30fps. The loop no longer runs at a fixed rate,
+   so anything that used to advance by a per-frame constant multiplies by this
+   instead and keeps its original apparent speed. */
+let FS=1;
+
 /* --- starfield with parallax layers --- */
 let stars=[];
 function buildStars(){
@@ -922,7 +950,7 @@ function buildStars(){
 }
 function drawStars(t){
   for(const s of stars){
-    s.x -= s.z*.055; if(s.x<-2){ s.x=W+2; s.y=Math.random()*H; }
+    s.x -= s.z*.055*FS; if(s.x<-2){ s.x=W+2; s.y=Math.random()*H; }
     const a = s.a * (.72 + .28*Math.sin(t*.0016 + s.tw));
     g.globalAlpha=a; g.fillStyle='#D2DCEB';
     g.fillRect(s.x, s.y, s.r, s.r);
@@ -939,7 +967,7 @@ function spawnTie(){
 }
 function drawTies(){
   for(let i=ties.length-1;i>=0;i--){
-    const t=ties[i]; t.x+=t.vx; t.y+=t.vy;
+    const t=ties[i]; t.x+=t.vx*FS; t.y+=t.vy*FS;
     g.globalAlpha=.5; g.fillStyle='#7E8894';
     g.fillRect(t.x,t.y,2.5,2.5);
     g.globalAlpha=.16; g.fillRect(t.x-t.vx*4,t.y-t.vy*4,7,1);
@@ -1193,6 +1221,7 @@ function fitPlanetBuffer(R){
   if(want !== PBUF.width){
     PBUF.width = PBUF.height = want;
     pimg = pg.createImageData(want, want);
+    planetDirty = true;          // resizing blanks the buffer — reshade now, not on the next cadence tick
   }
 }
 
@@ -1214,7 +1243,9 @@ function cloudAt(x,y,z){
     + .45*Math.sin(y*6.1-z*4.3)*Math.cos(x*5.7));
 }
 
+let planetPasses=0;          // how often the raytrace actually runs — the whole point of the cadence
 function renderPlanetBuffer(craters){
+  planetPasses++;
   const N=PBUF.width, d=pimg.data, half=N/2;
   const cr=Math.cos(-planetRot), sr=Math.sin(-planetRot);
   // the weather runs a little ahead of the ground it sits over
@@ -1296,12 +1327,24 @@ function renderPlanetBuffer(craters){
   pg.putImageData(pimg,0,0);
 }
 
-function drawPlanet(cx,cy,R,t){
+/* The raytrace is the single most expensive thing this app does — up to 65k
+   pixels of trig per pass. It used to run every second frame (30/s) forever,
+   which is what heats the phone during a long session. The sphere only turns
+   0.8° in 80ms, so re-shading at 12/s is imperceptible while the outline,
+   lighting and atmosphere below still redraw every frame. */
+const PLANET_MS = 80;
+let planetAcc = PLANET_MS, planetDirty = true, planetScars = -1;
+function drawPlanet(cx,cy,R,t,dt){
   if(!V.planetAlive) return;
   fitPlanetBuffer(R);
-  planetRot += .00016*16;
-  planetFrame++;
-  if(planetFrame%2===0) renderPlanetBuffer(V.craters);
+  // new scarring has to land immediately: under reduced motion the cadence
+  // reshade never runs, so this is the only thing that would repaint it
+  if(V.craters.length !== planetScars){ planetScars=V.craters.length; planetDirty=true; }
+  if(!REDUCED.matches) planetRot += .00016*dt;
+  planetAcc += dt;
+  if(planetDirty || (planetAcc>=PLANET_MS && !REDUCED.matches)){
+    planetAcc=0; planetDirty=false; renderPlanetBuffer(V.craters);
+  }
 
   g.save(); g.globalAlpha=V.planetOpacity;
   const at=g.createRadialGradient(cx,cy,R*.9,cx,cy,R*1.3);
@@ -1400,9 +1443,9 @@ function spawnDebris(x,y,n,R){
 function drawDebris(dt){
   for(let i=debris.length-1;i>=0;i--){
     const c=debris[i];
-    c.x+=c.vx*dt*.06; c.y+=c.vy*dt*.06; c.rot+=c.spin;
-    c.vx*=.9995; c.vy*=.9995;
-    c.life-=c.fade*dt; c.heat*=.997;
+    c.x+=c.vx*dt*.06; c.y+=c.vy*dt*.06; c.rot+=c.spin*FS;
+    c.vx*=Math.pow(.9995,FS); c.vy*=Math.pow(.9995,FS);
+    c.life-=c.fade*dt; c.heat*=Math.pow(.997,FS);
     if(c.life<=0){ debris.splice(i,1); continue; }
     g.save(); g.translate(c.x,c.y); g.rotate(c.rot);
     // cooling: molten orange fading to cold rock
@@ -1433,8 +1476,9 @@ function ring(x,y,max,col){ rings.push({x,y,r:6,max,life:1,col}); }
 function drawParts(){
   g.globalCompositeOperation='lighter';
   for(let i=parts.length-1;i>=0;i--){
-    const p=parts[i]; p.x+=p.vx; p.y+=p.vy; p.vx*=.988; p.vy*=.988;
-    p.life-=p.decay; p.rot+=p.vr;
+    const p=parts[i]; p.x+=p.vx*FS; p.y+=p.vy*FS;
+    p.vx*=Math.pow(.988,FS); p.vy*=Math.pow(.988,FS);
+    p.life-=p.decay*FS; p.rot+=p.vr*FS;
     if(p.life<=0){ parts.splice(i,1); continue; }
     g.save(); g.translate(p.x,p.y); g.rotate(p.rot);
     g.globalAlpha=p.life; g.fillStyle=p.c;
@@ -1443,7 +1487,7 @@ function drawParts(){
   }
   g.globalCompositeOperation='source-over';
   for(let i=rings.length-1;i>=0;i--){
-    const r=rings[i]; r.r+=(r.max-r.r)*.055; r.life-=.016;
+    const r=rings[i]; r.r+=(r.max-r.r)*(1-Math.pow(1-.055,FS)); r.life-=.016*FS;
     if(r.life<=0){ rings.splice(i,1); continue; }
     g.beginPath(); g.arc(r.x,r.y,r.r,0,TAU);
     g.strokeStyle=r.col; g.globalAlpha=r.life*.8; g.lineWidth=Math.max(.5,4*r.life); g.stroke();
@@ -1451,26 +1495,55 @@ function drawParts(){
   g.globalAlpha=1;
 }
 
-/* --- master loop --- */
-let last=0, tieTimer=0;
+/* --- master loop ---
+   Frame budget, not a free-running 60fps. A focus session is the app sitting
+   on screen for 25-50 minutes, so the idle cost is the cost that matters:
+   30fps while nothing is happening, the full rate only while something is
+   actually in motion, and a near-freeze when the OS asks for reduced motion.
+   Everything below is scaled by dt so the scene looks identical at any rate. */
+/* matchMedia is missing in some embedding contexts, so don't assume it. Without
+   it we simply never claim reduced motion — the CSS @media rule still applies. */
+const REDUCED = (typeof matchMedia==='function')
+  ? matchMedia('(prefers-reduced-motion:reduce)') : {matches:false};
+const IDLE_MS = 33, BUSY_MS = 0, CALM_MS = 66;
+/* "busy" = a frame the eye will actually track. Charge easing counts: it runs
+   for a second or so after every objective toggle and looks bad if it steps. */
+function sceneBusy(){
+  return V.firing || V.beam>0 || V.impact>0 || V.manual || V.shake>.01 || V.flash>.01
+      || debris.length>0 || parts.length>0 || rings.length>0
+      || Math.abs(V.charge - (S.mode==='focus' ? (S.total?(S.total-S.left)/S.total:0) : S.charge))>.002;
+}
+let last=0, tieTimer=0, frames=0;
 function frame(t){
   requestAnimationFrame(frame);
-  const dt=Math.min(t-last,50); last=t;
+  /* Backgrounded: browsers throttle rAF rather than stopping it. Skip the work
+     and swallow the gap, so returning doesn't dump a huge dt into the physics. */
+  if(document.hidden){ last=t; return; }
+  const gap = t-last;
+  const budget = REDUCED.matches ? CALM_MS : (sceneBusy() ? BUSY_MS : IDLE_MS);
+  if(gap < budget) return;                    // leave `last` alone; the skipped time carries into dt
+  const dt=Math.min(gap,50); last=t;
+  frames++;
+  FS = dt/16.667;
   if(!W) return;
+  /* per-frame decay constants were tuned at 60fps — normalise them to dt so a
+     30fps frame decays exactly as far as two 60fps frames would have */
+  const ease = f => 1-Math.pow(1-f, dt/16.667);
+  const decay = f => Math.pow(f, dt/16.667);
 
   // ease visual charge toward logical
   const target = S.mode==='focus' ? (S.total?(S.total-S.left)/S.total:0) : S.charge;
-  V.charge = lerp(V.charge, target, .06);
-  const solT = solutionPct(); V.solution = lerp(V.solution, solT===null?target:solT, .09);
+  V.charge = lerp(V.charge, target, ease(.06));
+  const solT = solutionPct(); V.solution = lerp(V.solution, solT===null?target:solT, ease(.09));
 
   // rotation: free-spin idle, ease to firing alignment when locked
   if(V.aimLock){
     let d=((V.aimTarget - V.rot + Math.PI*3)%TAU)-Math.PI;
-    V.rot += d*.035;
+    V.rot += d*ease(.035);
   } else if(V.manual){
     V.rot += V.rotVel*dt;                      // free spin after a drag
-    V.rotVel*=.995;
-  } else {
+    V.rotVel*=decay(.995);
+  } else if(!REDUCED.matches){
     // idle: slow drift that keeps the superlaser presented to the camera
     V.drift += dt*.00016;
     V.rot = 1.15 + Math.sin(V.drift)*.5;
@@ -1478,10 +1551,10 @@ function frame(t){
   V.rot=(V.rot+TAU)%TAU;
 
   // shake scales with charge + firing
-  const shakeAmt = (V.charge>.85 ? (V.charge-.85)*7 : 0) + V.shake;
+  const shakeAmt = REDUCED.matches ? 0 : (V.charge>.85 ? (V.charge-.85)*7 : 0) + V.shake;
   root.style.setProperty('--shake', (Math.sin(t*.09)*shakeAmt).toFixed(2)+'px');
-  V.shake*=.9;
-  if(V.flash>0){ V.flash*=.88; $('flash').style.opacity=V.flash.toFixed(3); }
+  V.shake*=decay(.9);
+  if(V.flash>0){ V.flash*=decay(.88); $('flash').style.opacity=V.flash.toFixed(3); }
 
   g.clearRect(0,0,W,H);
   drawStars(t);
@@ -1491,7 +1564,7 @@ function frame(t){
   const SX=W*.27, SY=H*.5, SR=Math.min(W*.19,H*.36);
   const PX=W*.76, PY=H*.48, PR=Math.min(W*.13,H*.26)*V.planetR;
 
-  drawPlanet(PX,PY,PR,t);
+  drawPlanet(PX,PY,PR,t,dt);
   drawFleet(t);
   drawReticle(PX,PY,PR,t);
 
@@ -1572,7 +1645,12 @@ function inArtifact(){
     return /(^|\.)claude(usercontent)?\.(ai|com)$/.test(location.hostname);
   }catch(e){ return true; }   // cross-origin frame access throws — that's an iframe
 }
+/* navigator.onLine is only reliable in the negative — false really does mean no
+   route out. That's exactly the case worth short-circuiting: the app is meant
+   to run offline, so a doomed fetch and a raw network error is the wrong answer. */
+function offline(){ return typeof navigator!=='undefined' && navigator.onLine===false; }
 async function ask(prompt,maxTokens){
+  if(offline()){ const e=new Error('offline'); e.offline=true; throw e; }
   const body=JSON.stringify({ model:"claude-sonnet-5", max_tokens:maxTokens||900,
     messages:[{role:"user",content:prompt}] });
   const k=userKey();
@@ -1615,6 +1693,8 @@ function aiDone(btn,note,msg,err){
   note.className='ai-note'+(err?' err':''); note.textContent=msg;
 }
 function aiFail(e){
+  if(e && e.offline)
+    return 'No connection — analysis needs the command net. Everything else here works offline; add steps manually below and try again when you are back.';
   AI_OK=false;
   return 'Model unreachable — add steps manually below. Paste an API key under ▤ Record to enable it here.';
 }
@@ -1875,6 +1955,19 @@ function importBackup(file){
     try{
       const d=JSON.parse(fr.result);
       if(!d||typeof d!=='object') throw new Error('not a backup file');
+      /* Restore overwrites the campaign record outright, and the record is the
+         one thing here that can't be rebuilt. Say what is about to be lost and
+         what replaces it, by the numbers, before doing it. */
+      const inc=x=>Array.isArray(x)?x.length:0;
+      const have=S.log.length+S.kills.length;
+      if(have && !confirm(
+          `Restore will replace what's on this device.\n\n`
+        + `Now:  ${S.log.length} sessions · ${S.kills.length} kills · ${S.debts.length} debts\n`
+        + `File: ${inc(d.log)} sessions · ${inc(d.kills)} kills · ${inc(d.debts)} debts\n\n`
+        + `This cannot be undone. Export a backup first if you're unsure.`)){
+        $('rec-io').className='ai-note'; $('rec-io').textContent='Restore cancelled — nothing changed.';
+        return;
+      }
       const n=(x,f)=>Array.isArray(x)?x:f;
       S.kills=n(d.kills,S.kills); S.debts=n(d.debts,S.debts); S.log=n(d.log,S.log);
       S.intel=n(d.intel,S.intel); S.queue=n(d.queue,S.queue); S.deferred=n(d.deferred,S.deferred);
@@ -2469,7 +2562,7 @@ function focusAcquire(){
   say(`Target ${S.code} acquired. Station slewing to firing alignment.`);
   pushLog(`target ${S.code} designated`);
   renderCharge();
-  S.tick=setInterval(tickFocus,1000);
+  S.tick=setInterval(tickFocus,1000); syncWake();
   persist();
 }
 function focusFire(){
@@ -2581,7 +2674,7 @@ function logSession(outcome){
   S.t0=0; persist();
 }
 function resetWeapon(keepMsg){
-  clearInterval(S.tick); S.tick=null;
+  clearInterval(S.tick); S.tick=null; abortDisarm(); releaseWake();
   S.phase='IDLE'; S.name=''; S.code=''; S.total=0; S.left=0; S.deadline=0; S.charge=0; S.litShafts=-1;
   A.stopHum(); A.klaxon(false); S.critical=false; $('critband').classList.remove('on');
   V.aimLock=false; V.manual=false; V.reticle=0; V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.beam=0; V.impact=0;
@@ -2643,7 +2736,7 @@ function restoreSession(sess,why){
     checkArm();
   } else {
     A.startHum();
-    S.tick=setInterval(tickFocus,1000);
+    S.tick=setInterval(tickFocus,1000); syncWake();
     say(back
       ? `Back on ${S.code} — ${mmss(S.left)} remaining.`
       : `Session restored. ${S.code} still charging — ${mmss(S.left)} remaining.`);
@@ -2658,7 +2751,7 @@ function toggleHold(){
     clearInterval(S.tick); S.tick=null; S.phase='HOLD'; S.paused=true;
     S.left=Math.max(0,Math.round((S.deadline-Date.now())/1000)); S.deadline=0;
     A.stopHum(); A.klaxon(false); $('critband').classList.remove('on'); S.critical=false;
-    $('hold').textContent='Resume · restart reactor';
+    $('hold').textContent='Resume · restart reactor'; syncWake();
     say('Reactor on hold. Charge preserved.','bad'); pushLog('REACTOR HOLD');
     persist();
   } else if(S.phase==='HOLD'){
@@ -2666,12 +2759,29 @@ function toggleHold(){
     S.deadline=Date.now()+S.left*1000;
     $('hold').textContent='Hold · pause reactor';
     say('Reactor restarted. Resuming charge.'); pushLog('reactor resumed');
-    S.tick=setInterval(tickFocus,1000);
+    S.tick=setInterval(tickFocus,1000); syncWake();
     persist();
   }
 }
+/* Dumping the reactor throws away the session AND logs it as an abort, which
+   feeds the calibration stats. It was one keystroke from anywhere on the page.
+   Now it takes two, and the button says so — same guard for click and Escape. */
+let abortArmed=0, abortTimer=null;
+function abortDisarm(){
+  abortArmed=0; clearTimeout(abortTimer); abortTimer=null;
+  const b=$('abort'); if(b) b.textContent=b.dataset.label||'Abort · dump reactor · ESC';
+}
 function abort(){
-  if(S.mode!=='focus'||S.phase!=='CHARGING') return;
+  if(S.mode!=='focus'||S.phase!=='CHARGING') return abortDisarm();
+  const b=$('abort');
+  if(!abortArmed){
+    abortArmed=1;
+    if(b){ b.dataset.label=b.dataset.label||b.textContent; b.textContent='Confirm dump?'; }
+    say('Dumping the reactor loses this session. Confirm to proceed.','bad');
+    abortTimer=setTimeout(abortDisarm,5000);
+    return;
+  }
+  abortDisarm();
   logSession('aborted');
   A.dump(); pushLog('REACTOR DUMPED · target lost');
   say('Reactor dumped. Target lost — charge does not carry over.','bad');
@@ -2681,7 +2791,7 @@ function setMode(m){
   const prev=S.mode;
   // leaving the Obliterator tab: park the session instead of destroying it
   if(prev==='focus' && m!=='focus') S.focusHold=sessionBlob();
-  S.mode=m; clearInterval(S.tick); S.tick=null; A.stopHum(); A.klaxon(false);
+  S.mode=m; clearInterval(S.tick); S.tick=null; A.stopHum(); A.klaxon(false); abortDisarm(); syncWake();
   S.critical=false; $('critband').classList.remove('on');
   $('clock-focus').classList.toggle('hidden',m!=='focus');
   $('clock-proj').classList.toggle('hidden',m==='focus');
@@ -3108,6 +3218,10 @@ function runBoot(done){
   });
 })();
 
+/* ---- link state ---- */
+addEventListener('offline',()=>pushLog('COMMAND NET LOST · analysis unavailable'));
+addEventListener('online', ()=>{ AI_OK=true; pushLog('command net restored'); });
+
 /* ---- catch up after the OS suspends us ----
    iOS throttles then stops timers for a backgrounded app. Ticking on the way
    back in means the clock is right the moment you look at it, not a second later.
@@ -3115,11 +3229,14 @@ function runBoot(done){
 addEventListener('visibilitychange',()=>{
   if(document.visibilityState!=='visible') return;
   if(S.mode==='focus' && S.phase==='CHARGING' && S.deadline) tickFocus();
+  syncWake();          // the OS drops the screen lock on hide; take it back
 });
 
 /* test hook — inert in the browser, lets the jsdom harness drive the real code */
 if(typeof window!=='undefined' && window.__OBLITERATOR_TEST__)
-  window.__app={S,V,setMode,focusAcquire,tickFocus,toggleHold,toggleObjective,persist,restoreSession,inArtifact,resetWeapon};
+  window.__app={S,V,setMode,focusAcquire,tickFocus,toggleHold,toggleObjective,persist,restoreSession,inArtifact,resetWeapon,
+    abort,abortDisarm,importBackup,ask,aiFail,offline,sceneBusy,syncWake,wantsWake,frame,
+    REDUCED, stats:()=>({planetPasses,frames})};
 })();
 
 /* ---- PWA registration ---- */

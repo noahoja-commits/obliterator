@@ -103,21 +103,27 @@ serving the old cached version.
 ## Tests
 
     npm --prefix test install     # once - pulls jsdom
-    npm --prefix test test        # 130 assertions
+    npm --prefix test test        # 177 assertions
 
-Four suites, all driving the real `index.html` inside jsdom (canvas, Web Audio
+Five suites, all driving the real `index.html` inside jsdom (canvas, Web Audio
 and the clock are stubbed; nothing else is):
 
     test.js         timer drift, session persistence, boot restore
     tabs.test.js    focus session surviving the Debt Star tab
     ui.test.js      hold-to-fire, blast guard, dial, drag-reorder, instruments
+    upgrades.test.js  frame budget, abort guard, restore guard, wake lock, offline
     proxy.test.mjs  api/ai.js - origin gate, payload caps, rate limit, model
 
 The manifest lives in `test/` rather than the repo root on purpose: a root
 `package.json` would change how Vercel builds what is otherwise a static site.
 
+`boot({render:true})` gives the scene canvas a real size so the whole draw path
+runs; the render tests use it. It is off by default because the raytrace in
+software is slow.
+
 Not covered: the swipe-between-stations gesture. jsdom has no real touch, so
-that one needs a device.
+that one needs a device. Nor is the wake lock's real effect on a screen -
+the tests check that the app asks for and releases it at the right moments.
 
 ## Files
 
