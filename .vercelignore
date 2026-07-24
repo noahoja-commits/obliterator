@@ -1,0 +1,9 @@
+# The CLI uploads everything not listed here — it does NOT read .gitignore.
+# Without this, test/ ships to production, including the pretest copy of
+# api/ai.js, which would publish the proxy's rate limits and origin gate.
+test
+node_modules
+README.md
+worker.js
+netlify
+netlify.toml
