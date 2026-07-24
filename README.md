@@ -103,15 +103,16 @@ serving the old cached version.
 ## Tests
 
     npm --prefix test install     # once - pulls jsdom
-    npm --prefix test test        # 177 assertions
+    npm --prefix test test        # 231 assertions
 
-Five suites, all driving the real `index.html` inside jsdom (canvas, Web Audio
+Six suites, all driving the real `index.html` inside jsdom (canvas, Web Audio
 and the clock are stubbed; nothing else is):
 
     test.js         timer drift, session persistence, boot restore
     tabs.test.js    focus session surviving the Debt Star tab
     ui.test.js      hold-to-fire, blast guard, dial, drag-reorder, instruments
     upgrades.test.js  frame budget, abort guard, restore guard, wake lock, offline
+    fire.test.js    the staged firing sequence, stage by stage and in order
     proxy.test.mjs  api/ai.js - origin gate, payload caps, rate limit, model
 
 The manifest lives in `test/` rather than the repo root on purpose: a root
