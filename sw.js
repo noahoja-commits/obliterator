@@ -5,7 +5,7 @@
      · /api/*     -> never cached, always network (AI calls must be live)
    Bump CACHE when you deploy or clients will keep the old shell. */
 
-const CACHE = 'obliterator-v7';
+const CACHE = 'obliterator-v8';
 
 // NB: never cache './index.html' — vercel.json sets cleanUrls, so that path
 // 308s to './'. cache.add() would store a redirected response, and answering a

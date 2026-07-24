@@ -820,6 +820,34 @@ const A = (() => {
       g.gain.setValueAtTime(.001,t); g.gain.exponentialRampToValueAtTime(.17,t+.05);
       g.gain.exponentialRampToValueAtTime(.001,t+.35);
       o.connect(f); f.connect(g); g.connect(master); o.start(t); o.stop(t+.36); },
+    /* --- Debt Star siege bombardment --- */
+    // targeting sweep before the volley
+    range(){ if(!on||!ensure())return; const t=ctx.currentTime;
+      const o=ctx.createOscillator(),g2=ctx.createGain();
+      o.type='sine'; o.frequency.setValueAtTime(1300,t); o.frequency.exponentialRampToValueAtTime(560,t+.14);
+      g2.gain.setValueAtTime(.001,t); g2.gain.exponentialRampToValueAtTime(.05,t+.02);
+      g2.gain.exponentialRampToValueAtTime(.001,t+.16);
+      o.connect(g2); g2.connect(master); o.start(t); o.stop(t+.18); },
+    // one turbolaser bolt leaving the battery — pitch drifts by index so a
+    // volley reads as a burst, not one note repeated
+    bolt(i){ if(!on||!ensure())return; const t=ctx.currentTime;
+      const o=ctx.createOscillator(),g2=ctx.createGain();
+      o.type='sawtooth'; o.frequency.setValueAtTime(720-(i%5)*40,t);
+      o.frequency.exponentialRampToValueAtTime(190,t+.12);
+      g2.gain.setValueAtTime(.001,t); g2.gain.exponentialRampToValueAtTime(.07,t+.01);
+      g2.gain.exponentialRampToValueAtTime(.001,t+.14);
+      o.connect(g2); g2.connect(master); o.start(t); o.stop(t+.15); },
+    // a bolt landing on the hull; heavier and lower when it carves
+    pound(big){ if(!on||!ensure())return; const t=ctx.currentTime, d=big?.5:.28;
+      const s=ctx.createBufferSource(); s.buffer=noise(d);
+      const f=ctx.createBiquadFilter(); f.type='lowpass';
+      f.frequency.setValueAtTime(big?1400:2200,t); f.frequency.exponentialRampToValueAtTime(90,t+d);
+      const g2=ctx.createGain(); g2.gain.setValueAtTime(big?.34:.2,t); g2.gain.exponentialRampToValueAtTime(.001,t+d+.05);
+      s.connect(f); f.connect(g2); g2.connect(master); s.start(t); s.stop(t+d+.08);
+      const o=ctx.createOscillator(),og=ctx.createGain();
+      o.type='sine'; o.frequency.setValueAtTime(big?70:110,t); o.frequency.exponentialRampToValueAtTime(big?24:44,t+d);
+      og.gain.setValueAtTime(big?.4:.2,t); og.gain.exponentialRampToValueAtTime(.001,t+d);
+      o.connect(og); og.connect(master); o.start(t); o.stop(t+d+.05); },
     /* The firing sequence used to be one sound. It's now four, one per stage,
        so the audio tracks what the viewport is doing instead of running past it. */
     ignite(){ if(!on||!ensure())return; const t=ctx.currentTime;
@@ -890,7 +918,9 @@ const V = {                       // live visual state
      discharging into the core; core is the convergence bloom; beamHead is how
      far the beam has travelled toward the planet (it is not instant any more);
      cracks is the crustal fracture spreading before the world lets go. */
-  trib:[0,0,0,0,0,0,0,0], core:0, coreT:0, beamHead:0, cracks:0, cracksT:0
+  trib:[0,0,0,0,0,0,0,0], core:0, coreT:0, beamHead:0, cracks:0, cracksT:0,
+  // Debt Star: a payment strike in progress, and the hull scale it eases toward
+  siege:false, planetTo:1
 };
 /* craters live on the debt record so scarring survives reloads */
 function craterFromSeed(seed){
@@ -1475,6 +1505,56 @@ function drawBeam(sx,sy,tx,ty,width,head){
   g.globalCompositeOperation='source-over'; g.restore();
 }
 
+/* --- turbolaser salvo: the Debt Star bombardment ---
+   Where the Obliterator fires one superlaser, a debt payment is a barrage.
+   Each bolt streaks from the station battery to a point on the target hull,
+   staggered, and detonates on contact. The count and weight scale with the
+   size of the payment, so a big month lands like a heavy salvo and a token
+   payment is a couple of glancing hits. onHit fires as each bolt lands, which
+   is what carries the crater reveals and the shake back to the controller. */
+let salvo=[], salvoSpawned=0;
+function spawnSalvo(sx,sy,tx,ty,n,power,onHit){
+  salvoSpawned+=n;
+  for(let i=0;i<n;i++){
+    // spread the impact points across the lit face, biggest hits last
+    const a=rand(0,TAU), rr=rand(.12,.72), spread=(power*30+14);
+    salvo.push({
+      sx, sy,
+      tx: tx + Math.cos(a)*spread*rr,
+      ty: ty + Math.sin(a)*spread*rr,
+      t:0, delay:i*rand(40,90), speed:rand(.006,.009),
+      big: i>=n-Math.max(1,Math.round(power*3)),   // the tail of the volley are the heavy rounds
+      idx:i, hit:false, onHit });
+  }
+}
+function drawSalvo(dt){
+  for(let i=salvo.length-1;i>=0;i--){
+    const b=salvo[i];
+    if(b.delay>0){ b.delay-=dt; continue; }
+    if(!b.launched){ b.launched=true; A.bolt(b.idx); }
+    const prev=b.t;
+    b.t=Math.min(1,b.t+b.speed*dt);
+    const x0=lerp(b.sx,b.tx,prev), y0=lerp(b.sy,b.ty,prev);
+    const x1=lerp(b.sx,b.tx,b.t),  y1=lerp(b.sy,b.ty,b.t);
+    // the bolt: a bright tracer with a trailing streak
+    g.save(); g.globalCompositeOperation='lighter';
+    g.strokeStyle=b.big?'rgba(214,255,230,.95)':'rgba(140,255,184,.9)';
+    g.lineWidth=b.big?3.4:2; g.lineCap='round';
+    g.shadowBlur=b.big?16:9; g.shadowColor='#56E08A';
+    g.beginPath(); g.moveTo(x0,y0); g.lineTo(x1,y1); g.stroke();
+    g.shadowBlur=0; g.restore();
+    if(b.t>=1 && !b.hit){
+      b.hit=true;
+      burst(b.tx,b.ty,b.big?26:11,b.big?1.5:.75);
+      ring(b.tx,b.ty,b.big?90:46,b.big?'#D6FFE6':'#8CFFB8');
+      A.pound(b.big);
+      if(b.onHit) b.onHit(b);
+      salvo.splice(i,1);
+    }
+  }
+  g.lineCap='butt';
+}
+
 /* --- crustal fracture: the world comes apart before it goes ---
    Branching polylines in unit-disc space, generated once per shot and then
    revealed progressively, so the cracks spread rather than appear. */
@@ -1601,6 +1681,7 @@ const IDLE_MS = 33, BUSY_MS = 0, CALM_MS = 66;
 function sceneBusy(){
   return V.firing || V.beam>0 || V.impact>0 || V.manual || V.shake>.01 || V.flash>.01
       || V.core>.01 || V.cracks>.01 || V.trib.some(x=>x>0)
+      || V.siege || salvo.length>0
       || debris.length>0 || parts.length>0 || rings.length>0
       || Math.abs(V.charge - (S.mode==='focus' ? (S.total?(S.total-S.left)/S.total:0) : S.charge))>.002;
 }
@@ -1660,6 +1741,7 @@ function frame(t){
     if(V.trib[i]>0) V.trib[i]=Math.max(0,V.trib[i]-dt*.0022);   // a discharge fades over ~450ms
   V.core   = lerp(V.core,   V.coreT,   ease(.09));
   V.cracks = lerp(V.cracks, V.cracksT, ease(.045));
+  if(Math.abs(V.planetR-V.planetTo)>.0005) V.planetR=lerp(V.planetR,V.planetTo,ease(.08));
   if(V.beamHead>0 && V.beamHead<1) V.beamHead=Math.min(1, V.beamHead + dt*.0055);  // ~180ms crossing
 
   drawPlanet(PX,PY,PR,t,dt);
@@ -1681,6 +1763,7 @@ function frame(t){
     }
   }
   drawDebris(dt);
+  if(salvo.length) drawSalvo(dt);
   drawParts();
 
   // hud readouts
@@ -2666,23 +2749,51 @@ function fireSequence(onDone){
   fireAt(FIRE.DONE,()=>{ V.firing=false; onDone(); });
 }
 
-function grazeShot(newScale){
-  A.graze();
-  V.beamHead=1;                       // a graze connects immediately; no travel beat
-  let w=0; const ramp=setInterval(()=>{ w+=1.1; V.beam=w; V.impact=w*5; V.shake=w*.12;
-    if(w>=6) clearInterval(ramp); },24);
-  setTimeout(()=>{
-    const PX=W*.76, PY=H*.48;
-    burst(PX,PY,40,.9); ring(PX,PY,140,'#8CFFB8');
-    V.beam=0; V.impact=0;
-    V.beamHead=0;
-    const from=V.planetR, t0=performance.now();
-    const ease=setInterval(()=>{
-      const k=clamp((performance.now()-t0)/700,0,1);
-      V.planetR=lerp(from,newScale,1-Math.pow(1-k,3));
-      if(k>=1) clearInterval(ease);
-    },16);
-  },440);
+/* ---- the siege strike ----
+   A debt payment, staged like a scaled-down firing sequence: range, then a
+   turbolaser volley whose weight tracks the size of the payment, then the hull
+   settles to its new proportion as the bolts land. `frac` is how much of the
+   remaining balance this payment cleared (0..1); `craters` is how many new
+   scars to reveal; the hull eases from its current size to `newScale`.
+   Cancellable, so a reset or tab-switch mid-strike leaves nothing running. */
+let siegeTimers=[], siegeIntervals=[];
+function siegeAt(ms,fn){ siegeTimers.push(setTimeout(fn,ms)); }
+function cancelSiege(){
+  siegeTimers.forEach(clearTimeout); siegeTimers=[];
+  siegeIntervals.forEach(clearInterval); siegeIntervals=[];
+  salvo.length=0; V.siege=false;
+}
+function siegeStrike(frac,craters,newScale,onLand){
+  cancelSiege();
+  V.siege=true;
+  const power=clamp(frac,0,1);
+  const n=clamp(2+Math.round(power*13),2,16);        // bolts in the volley
+  const SX=W*.30, SY=H*.5, PX=W*.76, PY=H*.48;
+  const PR=Math.min(W*.13,H*.26)*V.planetR;
+  A.range();
+
+  siegeAt(140,()=>{
+    let landed=0, scarsLeft=Math.max(0,craters|0);
+    // reveal the scars as the heavy rounds land, not all at once
+    spawnSalvo(SX,SY,PX,PY,n,power,(b)=>{
+      landed++;
+      V.shake=Math.max(V.shake, b.big?5:2);
+      if(b.big && scarsLeft>0 && onLand){ scarsLeft--; onLand(); }
+      if(landed>=n){
+        // the last bolt has struck: settle the hull and hand back
+        V.planetTo=newScale;
+        siegeAt(120,()=>{ V.siege=false; });
+      }
+    });
+    // heavier payments visibly punch the planet inward on the first wave
+    V.planetTo=lerp(V.planetR,newScale,.35+power*.4);
+  });
+
+  /* Completion is normally the last bolt landing, but the bolts only advance
+     while the viewport renders. Back it with a timer so the strike always
+     settles - the same reason the firing sequence is timer-driven, not
+     render-driven: a backgrounded or unmounted scene must still resolve. */
+  siegeAt(2200,()=>{ if(V.siege){ salvo.length=0; V.planetTo=newScale; V.siege=false; } });
 }
 
 /* ================= MODE: OBLITERATOR ================= */
@@ -2702,7 +2813,7 @@ function focusAcquire(){
   S.name=v; S.code=designation(); S.total=Math.round(S.minutes*60); S.left=S.total;
   S.deadline=Date.now()+S.left*1000;
   S.phase='CHARGING'; S.litShafts=-1;
-  V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.craters=[];
+  V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.planetTo=1; V.craters=[];
   V.fleet=S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() }));
   $('target').disabled=true; $('abort').disabled=false; $('hold').disabled=false;
   S.surged=false; S.t0=Date.now(); S.checkpoint=Date.now();
@@ -2752,7 +2863,7 @@ function lockTarget(){
   }
   S.phase='CHARGING'; S.name=t.name; S.code=t.code;
   S.charge=clamp(1-t.balance/t.original,0,1);
-  V.planetAlive=true; V.planetOpacity=1; V.planetR=.45+(t.balance/t.original)*.55;
+  V.planetAlive=true; V.planetOpacity=1; V.planetR=.45+(t.balance/t.original)*.55; V.planetTo=V.planetR;
   V.craters=cratersFor(t);
   V.fleet=S.debts.filter(d=>d.balance>.005 && d.id!==t.id).slice(0,4).map(d=>({
     r: 5+clamp(d.balance/Math.max(t.original,1),0,1.6)*11,
@@ -2769,30 +2880,63 @@ function lockTarget(){
   pushLog(`siege target ${t.code} locked`);
   renderCharge(); renderRoster();
 }
+const MILE=[.25,.5,.75];   // hull-destroyed marks worth calling out
 function logPayment(){
   const t=S.debts.find(d=>d.id===S.lockedId), amt=parseFloat($('payment').value);
   if(!t){ say('No target locked.','bad'); return; }
   if(!(amt>0)){ say('Enter a payment amount.','bad'); $('payment').focus(); return; }
   A.unlock();
-  t.balance=Math.max(0,t.balance-amt); t.paid=(t.paid||0)+amt;
-  (t.craters=t.craters||[]).push(Date.now()%100000 + Math.random());
-  V.craters=cratersFor(t);
+  const before=t.balance;
+  // how much of the remaining hull this payment took down — the whole strike
+  // scales off this, so a big month lands harder than a token payment
+  const frac=clamp(amt/Math.max(before,.01),0,1);
+  const destBefore=1-before/t.original;
+  t.balance=Math.max(0,before-amt); t.paid=(t.paid||0)+amt;
+  const destAfter=1-t.balance/t.original;
+
+  // scars scale with the size of the hit; a heavy payment carves several
+  const newCraters=t.balance<=.005 ? 3 : clamp(1+Math.round(frac*4),1,5);
+  t.craters=t.craters||[];
+  for(let i=0;i<newCraters;i++) t.craters.push(Date.now()%100000 + Math.random()+i);
+
   $('payment').value=''; S.charge=clamp(1-t.balance/t.original,0,1);
   $('t-mass').textContent=money(t.balance);
   $('t-integ').textContent=Math.round((t.balance/t.original)*100)+'%';
+
   if(t.balance<=.005){
+    // finishing blow: reveal all the scarring, hand straight to the interlock
+    V.craters=cratersFor(t);
     S.charge=1; renderCharge(); renderRoster(); persist(); armInterlock();
     say(`${t.code} at zero. Interlock released — you may destroy it.`,'hot');
-  } else {
-    grazeShot(.45+(t.balance/t.original)*.55);
-    const eta=etaLabel(t);
-    $('clock-eta').textContent=eta.text;
-    $('clock-proj').style.color=eta.never?'var(--alarm)':'';
-    renderCharge(); renderRoster(); persist();
-    say(`Direct hit. ${money(amt)} absorbed — ${money(t.balance)} of hull remaining.`);
-    pushLog(`hull breach · ${money(amt)}`);
-    const nx=pickTarget(); if(nx&&nx.id!==S.lockedId) setTimeout(lockTarget,1500);
+    pushLog(`hull integrity zero · ${money(amt)}`);
+    return;
   }
+
+  const critical=frac>=.34;   // a payment clearing a third of the balance in one hit
+  // reveal scars progressively as the heavy rounds land
+  const shown=t.craters.length-newCraters;
+  let revealed=shown;
+  siegeStrike(frac, newCraters, .45+(t.balance/t.original)*.55, ()=>{
+    revealed=Math.min(t.craters.length, revealed+1);
+    V.craters=cratersFor({craters:t.craters.slice(0,revealed)});
+  });
+  // ensure everything is shown once the strike is done
+  siegeAt(1600,()=>{ V.craters=cratersFor(t); renderCharge(); });
+
+  const eta=etaLabel(t);
+  $('clock-eta').textContent=eta.text;
+  $('clock-proj').style.color=eta.never?'var(--alarm)':'';
+  renderCharge(); renderRoster(); persist();
+  say(critical
+    ? `Critical hit! ${money(amt)} tore through — ${money(t.balance)} of hull left.`
+    : `Direct hit. ${money(amt)} absorbed — ${money(t.balance)} of hull remaining.`, critical?'hot':null);
+  pushLog(`${critical?'CRITICAL · ':''}hull breach · ${money(amt)}`);
+  // milestone callouts as the siege grinds the body down
+  for(const m of MILE) if(destBefore<m && destAfter>=m)
+    siegeAt(700,()=>{ say(`${Math.round(m*100)}% of ${t.code} destroyed.`,'hot');
+      pushLog(`milestone · ${Math.round(m*100)}% hull gone`); });
+
+  const nx=pickTarget(); if(nx&&nx.id!==S.lockedId) setTimeout(lockTarget,1800);
 }
 function debtFire(){
   const t=S.debts.find(d=>d.id===S.lockedId); if(!t) return;
@@ -2828,10 +2972,10 @@ function logSession(outcome){
   S.t0=0; persist();
 }
 function resetWeapon(keepMsg){
-  clearInterval(S.tick); S.tick=null; abortDisarm(); releaseWake(); cancelFire();
+  clearInterval(S.tick); S.tick=null; abortDisarm(); releaseWake(); cancelFire(); cancelSiege();
   S.phase='IDLE'; S.name=''; S.code=''; S.total=0; S.left=0; S.deadline=0; S.charge=0; S.litShafts=-1;
   A.stopHum(); A.klaxon(false); S.critical=false; $('critband').classList.remove('on');
-  V.aimLock=false; V.manual=false; V.reticle=0; V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.beam=0; V.impact=0;
+  V.aimLock=false; V.manual=false; V.reticle=0; V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.planetTo=1; V.beam=0; V.impact=0;
   V.craters=[]; V.fleet=[]; debris.length=0;   // fresh sky for the next target
   $('target').disabled=false; $('target').value='';
   $('abort').disabled=true; $('hold').disabled=true; $('hold').textContent='Hold · pause reactor';
@@ -2873,7 +3017,7 @@ function restoreSession(sess,why){
   $('t-class').textContent='TERRESTRIAL';
   $('t-mass').textContent=(rand(4.2,7.9)).toFixed(2)+'e24 KG';
   $('t-integ').textContent=Math.round((S.left/S.total)*100)+'%';
-  V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.craters=[];
+  V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.planetTo=1; V.craters=[];
   V.fleet=S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() }));
   aimAt();
   renderStrike(); renderCharge(); renderAdvisory(); renderProcessor();
@@ -2945,7 +3089,7 @@ function setMode(m){
   const prev=S.mode;
   // leaving the Obliterator tab: park the session instead of destroying it
   if(prev==='focus' && m!=='focus') S.focusHold=sessionBlob();
-  S.mode=m; clearInterval(S.tick); S.tick=null; A.stopHum(); A.klaxon(false); abortDisarm(); syncWake(); cancelFire();
+  S.mode=m; clearInterval(S.tick); S.tick=null; A.stopHum(); A.klaxon(false); abortDisarm(); syncWake(); cancelFire(); cancelSiege();
   S.critical=false; $('critband').classList.remove('on');
   $('clock-focus').classList.toggle('hidden',m!=='focus');
   $('clock-proj').classList.toggle('hidden',m==='focus');
@@ -3391,7 +3535,8 @@ if(typeof window!=='undefined' && window.__OBLITERATOR_TEST__)
   window.__app={S,V,setMode,focusAcquire,tickFocus,toggleHold,toggleObjective,persist,restoreSession,inArtifact,resetWeapon,
     abort,abortDisarm,importBackup,ask,aiFail,offline,sceneBusy,syncWake,wantsWake,frame,
     REDUCED, fireSequence, cancelFire, FIRE, focusFire,
-    stats:()=>({planetPasses,frames,cracks:cracks.length,debris:debris.length,rings:rings.length})};
+    lockTarget, logPayment, debtFire, addDebt, siegeStrike, cancelSiege, pickTarget, etaLabel,
+    stats:()=>({planetPasses,frames,cracks:cracks.length,debris:debris.length,rings:rings.length,salvo:salvo.length,salvoSpawned})};
 })();
 
 /* ---- PWA registration ---- */
