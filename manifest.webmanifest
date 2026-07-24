@@ -2,7 +2,7 @@
   "name": "The Obliterator",
   "short_name": "Obliterator",
   "description": "Single-target focus and debt annihilation from the bridge of a battle station.",
-  "start_url": "./index.html",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
@@ -19,13 +19,13 @@
       "name": "New target",
       "short_name": "Target",
       "description": "Designate a target and start charging",
-      "url": "./index.html?mode=focus"
+      "url": "./?mode=focus"
     },
     {
       "name": "Debt Star",
       "short_name": "Debt",
       "description": "Financial siege protocol",
-      "url": "./index.html?mode=debt"
+      "url": "./?mode=debt"
     }
   ]
 }

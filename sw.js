@@ -5,11 +5,13 @@
      · /api/*     -> never cached, always network (AI calls must be live)
    Bump CACHE when you deploy or clients will keep the old shell. */
 
-const CACHE = 'obliterator-v2';
+const CACHE = 'obliterator-v3';
 
+// NB: never cache './index.html' — vercel.json sets cleanUrls, so that path
+// 308s to './'. cache.add() would store a redirected response, and answering a
+// navigation with one makes respondWith throw. './' is the canonical entry.
 const SHELL = [
   './',
-  './index.html',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -63,7 +65,7 @@ self.addEventListener('fetch', e => {
         const net = fetch(req).then(r => {
           if (r.ok) caches.open(CACHE).then(c => c.put(req, r.clone()));
           return r;
-        }).catch(() => hit || caches.match('./index.html'));
+        }).catch(() => hit || caches.match('./'));
         return hit || net;
       })
     );
