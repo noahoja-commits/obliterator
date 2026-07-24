@@ -392,6 +392,69 @@ input[type=date]:focus{border-color:#2E353D;border-left-color:var(--amber-lit)}
   #crt::before,#flicker{display:none}
 }
 :focus-visible{outline:2px solid var(--amber-lit);outline-offset:2px}
+/* ============ TACTILE CONTROLS ============ */
+/* no 300ms tap delay, and every control acknowledges the press immediately */
+button,.sk,.body-row,.dial{touch-action:manipulation}
+button:not(:disabled):active{transform:translateY(1px)}
+.modes button:active,.seg button:active{background:#12161C}
+.sk:active{background:#11161C}
+
+/* fire: hold it down. the bar is the commit, the click alone does nothing */
+.fire-btn{overflow:hidden}
+.fire-btn::after{content:'';position:absolute;left:0;bottom:0;height:3px;
+  width:calc(var(--holdp,0) * 100%);background:var(--laser-core);
+  box-shadow:0 0 12px var(--laser);pointer-events:none}
+.fire-btn.arming{background:#1B7A4C;color:#fff;animation:none}
+.fire-hint{position:absolute;left:0;right:0;bottom:7px;text-align:center;font-family:var(--data);
+  font-size:7.5px;letter-spacing:.22em;color:rgba(214,255,230,.5);pointer-events:none;
+  text-transform:uppercase;opacity:0;transition:opacity .25s}
+.fire-btn.live + .fire-hint{opacity:1}
+
+/* safety guard: released by the interlock, but you still have to flip it */
+.cover{cursor:default}
+.cover.unlocked{cursor:grab;border-color:var(--amber-dim);color:var(--amber-lit)}
+.cover.unlocked:active{cursor:grabbing}
+.cover.dragging{transition:none}
+.cover.open{pointer-events:none}
+
+/* rotary session dial */
+.dial-wrap{display:flex;align-items:center;gap:11px;margin-top:9px}
+.dial{--a:0deg;position:relative;width:56px;height:56px;border-radius:50%;flex-shrink:0;
+  background:conic-gradient(var(--amber-dim) var(--a),#12161B 0) padding-box,#0A0C10;
+  border:1px solid #262C33;cursor:grab;outline:none;transition:box-shadow .2s,border-color .2s}
+.dial::before{content:'';position:absolute;inset:7px;border-radius:50%;background:#0B0E12;
+  border:1px solid #1B2027;box-shadow:inset 0 2px 5px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.05)}
+.dial::after{content:'';position:absolute;left:50%;top:9px;width:2px;height:13px;margin-left:-1px;
+  background:var(--amber-lit);border-radius:1px;transform-origin:50% 19px;
+  transform:rotate(var(--a));box-shadow:0 0 6px rgba(240,178,103,.8)}
+.dial:active{cursor:grabbing}
+.dial:focus-visible{border-color:var(--amber);box-shadow:0 0 0 2px rgba(200,133,58,.3)}
+.dial.off{opacity:.32;pointer-events:none}
+.dial-read{font-family:var(--data);font-size:9px;letter-spacing:.18em;color:var(--bone-mute);
+  text-transform:uppercase;line-height:1.7}
+.dial-read b{display:block;font-size:19px;letter-spacing:.06em;color:var(--bone);font-weight:400}
+.dial-read i{font-style:normal;color:#3E4650}
+
+/* drag handle on each objective — 7 children now, so state the columns */
+.sk[data-tog]{grid-template-columns:auto auto auto minmax(0,1fr) auto auto auto;gap:9px}
+.sk-grip{font-family:var(--data);font-size:12px;color:#2E353D;cursor:grab;user-select:none;
+  padding:0 2px;line-height:1;touch-action:none;transition:color .15s}
+.sk-grip:hover{color:var(--amber-dim)}
+.sk.drag{opacity:.9;background:#141A21;box-shadow:0 8px 22px rgba(0,0,0,.7);position:relative;z-index:5}
+.sk.shift{transition:transform .16s ease}
+
+@media (pointer:coarse){
+  .sk{padding:14px 12px}
+  .sk-box{width:21px;height:21px}
+  .sk.done .sk-box::after{left:6px;top:1.5px;width:5px;height:12px}
+  .sk-del{padding:10px 12px;font-size:15px}
+  .sk-grip{padding:10px 6px;font-size:15px}
+  .modes button,.seg button,.audio-btn{padding:12px 15px;font-size:10.5px}
+  .intel-btn,.add-btn,.ai-btn{padding:11px 14px}
+  .row-add input{padding:12px 11px}
+  .depth-dots button{width:20px;height:20px}
+  .dial{width:66px;height:66px}
+}
 </style>
 </head>
 <body>
@@ -472,6 +535,7 @@ input[type=date]:focus{border-color:#2E353D;border-left-color:var(--amber-lit)}
         <div class="tele-row"><span>Output</span><b id="t-out">0.00 TW</b></div>
         <div class="tele-row"><span>Hypermatter</span><b id="t-hyp">STABLE</b></div>
         <div class="tele-row"><span>Coil temp</span><b id="t-temp">294 K</b></div>
+        <div class="tele-row"><span>Containment</span><b id="t-cont">100.0%</b></div>
         <div class="mini" id="t-mini"></div>
       </div>
       <div class="tele-block">
@@ -507,8 +571,8 @@ input[type=date]:focus{border-color:#2E353D;border-left-color:var(--amber-lit)}
       </div>
       <div class="tele-block">
         <div class="tele-h">Station</div>
-        <div class="tele-row"><span>Shields</span><b>100%</b></div>
-        <div class="tele-row"><span>Complement</span><b>1,206,293</b></div>
+        <div class="tele-row"><span>Shields</span><b id="t-shield">100%</b></div>
+        <div class="tele-row"><span>Complement</span><b id="t-crew">1,206,293</b></div>
         <div class="tele-row"><span>Thermal port</span><b id="t-port">SEALED</b></div>
         <div class="tele-row"><span>Sector</span><b>ZZ9-PLURAL-Z-α</b></div>
       </div>
@@ -532,6 +596,11 @@ input[type=date]:focus{border-color:#2E353D;border-left-color:var(--amber-lit)}
         <button data-min="25" aria-pressed="true">25 MIN</button>
         <button data-min="50" aria-pressed="false">50 MIN</button>
         <button data-min="0.25" aria-pressed="false">TEST · 15s</button>
+      </div>
+      <div class="dial-wrap">
+        <div class="dial" id="dial" role="slider" tabindex="0" aria-label="Session length in minutes"
+             aria-valuemin="5" aria-valuemax="120" aria-valuenow="25" aria-valuetext="25 minutes"></div>
+        <div class="dial-read"><b id="dial-val">25</b>minutes<i id="dial-hint"> · drag to set</i></div>
       </div>
     </div>
     <div class="field hidden" id="debt-input">
@@ -557,7 +626,8 @@ input[type=date]:focus{border-color:#2E353D;border-left-color:var(--amber-lit)}
 
     <div class="field" style="align-items:flex-end">
       <div class="fire-assembly">
-        <button class="fire-btn" id="fire" disabled title="Space">Fire</button>
+        <button class="fire-btn" id="fire" disabled title="Hold to fire">Fire</button>
+        <div class="fire-hint">hold to fire</div>
         <div class="cover" id="cover">Safety interlock<br>Sealed until charge complete</div>
       </div>
       <button class="hold" id="hold" disabled>Hold · pause reactor</button>
@@ -1137,10 +1207,18 @@ const PAL = {
   shore:[124,112,78], land:[64,92,54], hill:[92,102,58], rock:[118,104,80], ice:[218,226,232]
 };
 function mixTo(d,i,c,k){ d[i]=c[0]*k; d[i+1]=c[1]*k; d[i+2]=c[2]*k; }
+/* Cheap banded noise for the cloud deck. Deliberately fewer terms than
+   elevation() — this runs per day-side pixel and the phone has to keep up. */
+function cloudAt(x,y,z){
+  return .5 + .5*(Math.sin(x*3.3+y*1.7)*Math.cos(z*2.9-x*1.1)
+    + .45*Math.sin(y*6.1-z*4.3)*Math.cos(x*5.7));
+}
 
 function renderPlanetBuffer(craters){
   const N=PBUF.width, d=pimg.data, half=N/2;
   const cr=Math.cos(-planetRot), sr=Math.sin(-planetRot);
+  // the weather runs a little ahead of the ground it sits over
+  const ccr=Math.cos(-planetRot*1.22), csr=Math.sin(-planetRot*1.22);
   for(let py=0;py<N;py++){
     const ny=(py/half-1);
     for(let px=0;px<N;px++){
@@ -1150,6 +1228,7 @@ function renderPlanetBuffer(craters){
       const nz=Math.sqrt(1-q);
       // view-space normal -> texture space (undo planet spin)
       const tx=nx*cr - nz*sr, ty=-ny, tz=nx*sr + nz*cr;
+      const cx2=nx*ccr - nz*csr, cz2=nx*csr + nz*ccr;
       const lat=Math.asin(clamp(ty,-1,1));
       const e=elevation(tx*1.8,ty*1.8,tz*1.8);
       const polar=Math.abs(lat)/(Math.PI/2);
@@ -1171,6 +1250,19 @@ function renderPlanetBuffer(craters){
       if(lit > -.06){
         const k=.12 + Math.pow(day,.75)*1.05;
         mixTo(d,i,col,Math.min(k,1.35));
+        /* Cloud deck: a second noise field on its own slightly faster rotation,
+           banded toward the equator the way real weather is. Day side only —
+           cloud you can't see lit is just haze. */
+        const cd=cloudAt(cx2*1.55, ty*1.55, cz2*1.55);
+        const band=.55+.45*Math.cos(lat*3.1);
+        const cov=(cd-.34)*band;
+        if(cov>0){
+          const a=Math.min(cov*1.7,.9)*(.25+day*.85);
+          const s=228+Math.min(cd,1)*24;
+          d[i]  =lerp(d[i],  s,a);
+          d[i+1]=lerp(d[i+1],s,a);
+          d[i+2]=lerp(d[i+2],Math.min(255,s+8),a);
+        }
       } else {
         // night side: dark, with amber settlement lights clustered on land
         const night=clamp(-lit,0,1);
@@ -1293,7 +1385,42 @@ function drawBeam(sx,sy,tx,ty,width){
 }
 
 /* --- particles --- */
-let parts=[], rings=[];
+let parts=[], rings=[], debris=[];
+/* What's left of a world: lit chunks that tumble outward and cool as they go.
+   Slower and longer-lived than the spark burst, so the wreck reads as mass. */
+function spawnDebris(x,y,n,R){
+  for(let i=0;i<n;i++){
+    const a=rand(0,TAU), sp=rand(.35,2.6);
+    debris.push({ x:x+Math.cos(a)*R*.22, y:y+Math.sin(a)*R*.22,
+      vx:Math.cos(a)*sp, vy:Math.sin(a)*sp - .1,
+      s:rand(1.6,R*.13), rot:rand(0,TAU), spin:rand(-.05,.05),
+      life:1, fade:rand(.0016,.0042), heat:rand(.55,1) });
+  }
+}
+function drawDebris(dt){
+  for(let i=debris.length-1;i>=0;i--){
+    const c=debris[i];
+    c.x+=c.vx*dt*.06; c.y+=c.vy*dt*.06; c.rot+=c.spin;
+    c.vx*=.9995; c.vy*=.9995;
+    c.life-=c.fade*dt; c.heat*=.997;
+    if(c.life<=0){ debris.splice(i,1); continue; }
+    g.save(); g.translate(c.x,c.y); g.rotate(c.rot);
+    // cooling: molten orange fading to cold rock
+    const h=clamp(c.heat,0,1);
+    g.globalAlpha=clamp(c.life,0,1)*.9;
+    g.fillStyle=`rgb(${Math.round(60+180*h)},${Math.round(48+90*h)},${Math.round(44+30*h)})`;
+    g.beginPath();
+    g.moveTo(-c.s*.5,-c.s*.34); g.lineTo(c.s*.46,-c.s*.5);
+    g.lineTo(c.s*.5,c.s*.4); g.lineTo(-c.s*.36,c.s*.5);
+    g.closePath(); g.fill();
+    if(h>.35){                                  // still glowing on the lit edge
+      g.globalAlpha*=h*.7; g.fillStyle='#FFD9A0';
+      g.fillRect(-c.s*.5,-c.s*.34,c.s*.34,c.s*.2);
+    }
+    g.restore();
+  }
+  g.globalAlpha=1;
+}
 function burst(x,y,n,power){
   for(let i=0;i<n;i++){
     const a=rand(0,TAU), sp=rand(.8,7)*power;
@@ -1381,6 +1508,7 @@ function frame(t){
       g.globalCompositeOperation='source-over';
     }
   }
+  drawDebris(dt);
   drawParts();
 
   // hud readouts
@@ -2044,11 +2172,46 @@ function pushLog(txt){
 }
 (function miniBars(){ const m=$('t-mini'); for(let i=0;i<14;i++) m.appendChild(document.createElement('i')); })();
 
-setInterval(()=>{ if(S.booted && Math.random()>.45) pushLog(LOGS[Math.floor(Math.random()*LOGS.length)]); },4200);
+/* Station chatter. Idle ambience is generic; once the reactor is charging the
+   crew has something specific to talk about, so the log tracks the session. */
+const LOGS_CHARGE=[
+  'coolant loop 3 nominal','hypermatter annihilation steady','shaft alignment holding',
+  'lens temperature within tolerance','gunnery crew at stations','power draw climbing on schedule',
+  'containment field re-tuned','tributary pressure equalised'];
+const LOGS_HOT=[
+  'CAUTION · coil temperature climbing','containment operators on manual','venting excess to radiators',
+  'firing lane clear · all decks','superlaser aperture iris open'];
+setInterval(()=>{
+  if(!S.booted || Math.random()<.45) return;
+  const p=V.charge, hot=p>.86 && S.phase==='CHARGING';
+  const pool = hot ? LOGS_HOT : (S.phase==='CHARGING' && p>.05 ? LOGS_CHARGE : LOGS);
+  pushLog(pool[Math.floor(Math.random()*pool.length)]);
+},4200);
+
+/* live telemetry: a value being measured, not a value being displayed */
+const TEL={out:0,temp:294,cont:100,shield:100,crew:1206293};
+/* ease toward the target, then add a little sensor noise on top */
+function drift(cur,target,ease,noise){
+  return cur + (target-cur)*ease + (Math.random()-.5)*noise*2;
+}
 setInterval(()=>{
   const p=V.charge;
-  $('t-out').textContent=(p*14.7).toFixed(2)+' TW';
-  $('t-temp').textContent=Math.round(294+p*4100).toLocaleString()+' K';
+  /* Instruments don't sit still. Each reading random-walks around the value the
+     charge implies, so the panel reads like something being measured rather than
+     a number that only changes when the app decides it should. */
+  TEL.out   = drift(TEL.out,   p*14.7,            .18, .055);
+  TEL.temp  = drift(TEL.temp,  294 + p*4100,      .16, 26);
+  TEL.cont  = drift(TEL.cont,  100 - p*p*3.4,     .2,  .06);
+  TEL.shield= drift(TEL.shield,100 - p*7.5,       .12, .09);
+  TEL.crew  = drift(TEL.crew,  1206293 - Math.round(p*140), .3, 5);
+
+  $('t-out').textContent=Math.max(0,TEL.out).toFixed(2)+' TW';
+  $('t-temp').textContent=Math.round(TEL.temp).toLocaleString()+' K';
+  $('t-cont').textContent=clamp(TEL.cont,0,100).toFixed(1)+'%';
+  $('t-cont').className=TEL.cont<97.4?'bad':(TEL.cont<99.2?'hot':'');
+  $('t-shield').textContent=Math.round(clamp(TEL.shield,0,100))+'%';
+  $('t-shield').className=TEL.shield<94?'hot':'';
+  $('t-crew').textContent=Math.round(TEL.crew).toLocaleString();
   $('t-hyp').textContent=p>.85?'SURGING':p>0?'FLOWING':'STABLE';
   $('t-hyp').className=p>.85?'bad':(p>0?'hot':'');
   $('t-shafts').textContent=`${Math.floor(p*8)} / 8`;
@@ -2077,7 +2240,7 @@ function renderCharge(){
   $('pct').textContent=Math.round(p*100)+'%';
   $('pct').classList.toggle('idle',p===0);
   const lit=Math.floor(p*8);
-  if(lit>S.litShafts && lit>0 && S.phase==='CHARGING'){ A.blip(lit-1); pushLog(`tributary shaft ${lit} online`); }
+  if(lit>S.litShafts && lit>0 && S.phase==='CHARGING'){ A.blip(lit-1); buzz(8); pushLog(`tributary shaft ${lit} online`); }
   S.litShafts=lit;
   A.setCharge(p);
 
@@ -2106,6 +2269,7 @@ function renderStrike(){
     else if(o.est>0) tag=`est ${o.est}m`;
     const isNext = !o.done && i===nextIdx;
     return `<div class="sk ${o.done?'done':''} ${isNext?'next':''}" data-tog="${o.id}">
+      <span class="sk-grip" title="drag to re-sequence">⠿</span>
       <span class="sk-shaft">SHF ${i+1}</span><span class="sk-box"></span>
       <span class="sk-text">${esc(o.text)}${isNext?'<span class="next-tag">← do this one</span>':''}</span>
       <span class="sk-est ${cls}">${tag}</span>
@@ -2128,8 +2292,8 @@ function toggleObjective(id){
     o.actualSec=Math.round((Date.now()-S.checkpoint)/1000); S.checkpoint=Date.now();
   }
   renderStrike(); renderCharge(); renderAdvisory(); renderProcessor(); persist();
-  if(!o.done){ A.tick(); return; }
-  const i=S.objectives.indexOf(o); A.blip(i);
+  if(!o.done){ A.tick(); buzz(5); return; }
+  const i=S.objectives.indexOf(o); A.blip(i); buzz([0,14,24,14]);
   const all=S.objectives.every(x=>x.done);
   if(all && S.phase==='CHARGING' && S.left>0 && !S.surged){
     // finishing the work early surges the reactor — the wait shrinks
@@ -2218,9 +2382,13 @@ function checkArm(){
 }
 function armInterlock(){
   S.phase='READY';
-  $('cover').classList.add('open');
+  // the interlock releases the guard; raising it is a deliberate act
+  const cov=$('cover');
+  cov.classList.remove('open'); cov.classList.add('unlocked');
+  cov.innerHTML='Interlock released<br>Flip guard to expose';
   $('fire').disabled=false; $('fire').classList.add('live');
   A.clunk(); A.klaxon(false); $('critband').classList.remove('on'); S.critical=false;
+  buzz([0,30,40,30]);
   pushLog('INTERLOCK RELEASED · weapon hot');
   renderCharge();
 }
@@ -2242,6 +2410,8 @@ function fireSequence(onDone){
     V.flash=1; $('flash').style.opacity='1'; V.shake=16;
     const PX=W*.76, PY=H*.48;
     burst(PX,PY,180,1.6);
+    spawnDebris(PX,PY,44,Math.min(W*.13,H*.26));
+    setTimeout(()=>spawnDebris(PX,PY,22,Math.min(W*.13,H*.26)*1.4),260);
     ring(PX,PY,Math.max(W,H)*1.1,'#D6FFE6');
     setTimeout(()=>ring(PX,PY,Math.max(W,H)*.8,'#8CFFB8'),160);
     setTimeout(()=>ring(PX,PY,Math.max(W,H)*.55,'#56E08A'),320);
@@ -2290,6 +2460,7 @@ function focusAcquire(){
   $('target').disabled=true; $('abort').disabled=false; $('hold').disabled=false;
   S.surged=false; S.t0=Date.now(); S.checkpoint=Date.now();
   document.querySelectorAll('#durations button').forEach(b=>b.disabled=true);
+  $('dial').classList.add('off');
   $('t-desig').textContent=S.code;
   $('t-class').textContent='TERRESTRIAL';
   $('t-mass').textContent=(rand(4.2,7.9)).toFixed(2)+'e24 KG';
@@ -2383,7 +2554,7 @@ function debtFire(){
     S.allTime++;
     say(`${t.code} destroyed. ${money(t.original)} of ${t.name.toUpperCase()} erased.`,'hot');
     renderGraveyard(); persist();
-    setTimeout(()=>{ $('cover').classList.remove('open');
+    setTimeout(()=>{ sealGuard();
       $('fire').disabled=true; $('fire').classList.remove('live'); lockTarget(); },2200);
   });
 }
@@ -2414,14 +2585,15 @@ function resetWeapon(keepMsg){
   S.phase='IDLE'; S.name=''; S.code=''; S.total=0; S.left=0; S.deadline=0; S.charge=0; S.litShafts=-1;
   A.stopHum(); A.klaxon(false); S.critical=false; $('critband').classList.remove('on');
   V.aimLock=false; V.manual=false; V.reticle=0; V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.beam=0; V.impact=0;
-  V.craters=[]; V.fleet=[];
+  V.craters=[]; V.fleet=[]; debris.length=0;   // fresh sky for the next target
   $('target').disabled=false; $('target').value='';
   $('abort').disabled=true; $('hold').disabled=true; $('hold').textContent='Hold · pause reactor';
   S.objectives=[]; S.surged=false; S.paused=false; renderStrike();
   $('fire').disabled=true; $('fire').classList.remove('live');
-  $('cover').classList.remove('open');
+  sealGuard();
   ['t-desig','t-class','t-mass','t-integ'].forEach(i=>$(i).textContent='—');
   document.querySelectorAll('#durations button').forEach(b=>b.disabled=false);
+  $('dial').classList.remove('off'); holdCancel();
   renderCharge();
   if(!keepMsg) say('Awaiting target designation.');
 }
@@ -2449,6 +2621,7 @@ function restoreSession(sess,why){
   $('abort').disabled=false; $('hold').disabled=false;
   $('hold').textContent=S.phase==='HOLD'?'Resume · restart reactor':'Hold · pause reactor';
   document.querySelectorAll('#durations button').forEach(b=>b.disabled=true);
+  $('dial').classList.add('off');
   $('t-desig').textContent=S.code;
   $('t-class').textContent='TERRESTRIAL';
   $('t-mass').textContent=(rand(4.2,7.9)).toFixed(2)+'e24 KG';
@@ -2525,7 +2698,7 @@ function setMode(m){
   $('panel-strike').classList.toggle('hidden',m!=='focus');
   $('panel-system').classList.toggle('hidden',m!=='focus');
   renderAdvisory(); renderProcessor();
-  $('fire').disabled=true; $('fire').classList.remove('live'); $('cover').classList.remove('open');
+  $('fire').disabled=true; $('fire').classList.remove('live'); sealGuard();
   V.beam=0; V.impact=0;
   if(m==='focus'){
     S.lockedId=null;
@@ -2542,7 +2715,194 @@ function setMode(m){
 $('target').addEventListener('keydown',e=>{ if(e.key==='Enter') focusAcquire(); });
 $('target').addEventListener('blur',()=>{ if(S.mode==='focus'&&S.phase==='IDLE'&&$('target').value.trim()) focusAcquire(); });
 $('payment').addEventListener('keydown',e=>{ if(e.key==='Enter') logPayment(); });
-$('fire').addEventListener('click',()=>{ A.unlock(); S.mode==='focus'?focusFire():debtFire(); });
+/* ================= TACTILE CONTROLS ================= */
+/* Android and desktop Chrome honour this; iOS Safari has no web haptics API at
+   all, so on the iPhone every one of these is silently a no-op. The audio cues
+   are what carry the feedback there. */
+function buzz(pattern){ try{ navigator.vibrate && navigator.vibrate(pattern); }catch(e){} }
+
+/* ---- hold to fire ----
+   A weapon this size shouldn't go off on a stray tap. Holding also removes any
+   chance of a double-fire, which a plain click handler can't rule out on touch. */
+const HOLD_MS=850;
+let holdRAF=0, holdT0=0;
+function holdProgress(v){ $('fire').style.setProperty('--holdp',v.toFixed(3)); }
+function holdCancel(){
+  if(!holdT0) return;
+  cancelAnimationFrame(holdRAF); holdT0=0; holdProgress(0);
+  $('fire').classList.remove('arming');
+}
+function holdStart(){
+  if(holdT0 || S.phase!=='READY' || $('fire').disabled) return;
+  A.unlock(); buzz(12);
+  holdT0=performance.now(); $('fire').classList.add('arming');
+  (function step(){
+    if(!holdT0) return;
+    const p=clamp((performance.now()-holdT0)/HOLD_MS,0,1);
+    holdProgress(p);
+    if(p>=1){
+      holdT0=0; $('fire').classList.remove('arming'); holdProgress(0);
+      buzz([0,40,30,90]);
+      S.mode==='focus'?focusFire():debtFire();
+      return;
+    }
+    holdRAF=requestAnimationFrame(step);
+  })();
+}
+$('fire').addEventListener('pointerdown',e=>{ e.preventDefault(); holdStart(); });
+['pointerup','pointercancel','pointerleave'].forEach(ev=>$('fire').addEventListener(ev,holdCancel));
+
+/* ---- safety guard ----
+   The interlock releases it; flipping it is still your hand. Tap or drag up. */
+let openGuard=()=>{}, sealGuard=()=>{};
+(function(){
+  const cover=$('cover');
+  let y0=null, moved=0;
+  const openIt=()=>{
+    cover.style.transform=''; cover.classList.remove('dragging');
+    cover.classList.add('open'); cover.classList.remove('unlocked');
+    A.clunk(); buzz(18); pushLog('blast guard raised');
+  };
+  const snapBack=()=>{ cover.classList.remove('dragging'); cover.style.transform=''; };
+  openGuard=()=>{ if(cover.classList.contains('unlocked')) openIt(); };
+  sealGuard=()=>{
+    cover.classList.remove('open','unlocked','dragging');
+    cover.style.transform=''; cover.style.opacity='';
+    cover.innerHTML='Safety interlock<br>Sealed until charge complete';
+  };
+  cover.addEventListener('pointerdown',e=>{
+    if(!cover.classList.contains('unlocked')) return;
+    y0=e.clientY; moved=0; cover.classList.add('dragging');
+    cover.setPointerCapture&&cover.setPointerCapture(e.pointerId);
+  });
+  cover.addEventListener('pointermove',e=>{
+    if(y0===null) return;
+    moved=Math.max(moved,y0-e.clientY);
+    const k=clamp((y0-e.clientY)/70,0,1);
+    cover.style.transform=`rotateX(${(-108*k).toFixed(1)}deg)`;
+    cover.style.opacity=(1-k*.74).toFixed(2);
+  });
+  ['pointerup','pointercancel'].forEach(ev=>cover.addEventListener(ev,()=>{
+    if(y0===null) return;
+    const far=moved>34;
+    y0=null; cover.style.opacity='';
+    far||moved<4 ? openIt() : snapBack();     // a flick opens it; so does a plain tap
+  }));
+})();
+
+/* ---- rotary session dial ----
+   Sits alongside the presets rather than replacing them: the presets stay the
+   fast path, the dial is for when 25 or 50 isn't the number you want. */
+let dialPaint=()=>{};
+(function(){
+  const dial=$('dial'), MIN=5, MAX=120;
+  function paint(){
+    const m=S.minutes<1?MIN:clamp(S.minutes,MIN,MAX);
+    const frac=(m-MIN)/(MAX-MIN);
+    dial.style.setProperty('--a',(frac*300+30).toFixed(1)+'deg');
+    dial.setAttribute('aria-valuenow',String(m));
+    dial.setAttribute('aria-valuetext',m+' minutes');
+    $('dial-val').textContent = S.minutes<1 ? '15s' : String(Math.round(S.minutes));
+    $('dial-hint').textContent = S.minutes<1 ? ' · test fire' : ' · drag to set';
+  }
+  dialPaint=paint;
+  function setMinutes(m,quiet){
+    m=Math.round(clamp(m,MIN,MAX)/5)*5;
+    if(m===S.minutes) return;
+    S.minutes=m; paint(); renderAdvisory();
+    // the presets and the dial are two views of one value — keep them agreeing
+    document.querySelectorAll('#durations button').forEach(x=>
+      x.setAttribute('aria-pressed',String(parseFloat(x.dataset.min)===m)));
+    if(!quiet){ A.tick(); buzz(6); }
+    persist();
+  }
+  function fromPointer(e){
+    const r=dial.getBoundingClientRect();
+    const a=Math.atan2(e.clientY-(r.top+r.height/2), e.clientX-(r.left+r.width/2));
+    let deg=(a*180/Math.PI+90+360)%360;          // 0deg = straight up
+    if(deg>330) deg=330; if(deg<30) deg=30;      // dead zone at the bottom
+    setMinutes(MIN+((deg-30)/300)*(MAX-MIN));
+  }
+  let live=false;
+  dial.addEventListener('pointerdown',e=>{
+    if(dial.classList.contains('off')) return;
+    live=true; dial.setPointerCapture&&dial.setPointerCapture(e.pointerId); fromPointer(e); e.preventDefault();
+  });
+  dial.addEventListener('pointermove',e=>{ if(live) fromPointer(e); });
+  ['pointerup','pointercancel'].forEach(ev=>dial.addEventListener(ev,()=>{ live=false; }));
+  dial.addEventListener('keydown',e=>{
+    const step=e.shiftKey?15:5;
+    if(e.key==='ArrowUp'||e.key==='ArrowRight'){ e.preventDefault(); setMinutes(S.minutes+step); }
+    else if(e.key==='ArrowDown'||e.key==='ArrowLeft'){ e.preventDefault(); setMinutes(S.minutes-step); }
+  });
+  paint();
+})();
+
+/* ---- drag a shaft into a different order ----
+   Pointer-based on purpose: HTML5 drag-and-drop does not work on iOS at all. */
+(function(){
+  const list=$('strike-list');
+  let src=null, srcId=null, rows=[], startY=0, placed=-1;
+  list.addEventListener('pointerdown',e=>{
+    const grip=e.target.closest('.sk-grip'); if(!grip) return;
+    src=grip.closest('.sk'); if(!src||!src.dataset.tog) return;
+    srcId=src.dataset.tog; startY=e.clientY; placed=-1;
+    rows=Array.from(list.querySelectorAll('.sk[data-tog]'));
+    src.classList.add('drag');
+    rows.forEach(r=>{ if(r!==src) r.classList.add('shift'); });
+    list.setPointerCapture&&list.setPointerCapture(e.pointerId);
+    e.preventDefault(); buzz(10);
+  });
+  list.addEventListener('pointermove',e=>{
+    if(!src) return;
+    const dy=e.clientY-startY;
+    src.style.transform=`translateY(${dy}px)`;
+    const h=src.offsetHeight+1, shift=Math.round(dy/h);
+    const from=rows.indexOf(src);
+    const to=clamp(from+shift,0,rows.length-1);
+    if(to!==placed){ placed=to; buzz(4); }
+    rows.forEach((r,i)=>{
+      if(r===src) return;
+      let d=0;
+      if(from<to && i>from && i<=to) d=-h;
+      else if(from>to && i>=to && i<from) d=h;
+      r.style.transform=`translateY(${d}px)`;
+    });
+  });
+  ['pointerup','pointercancel'].forEach(ev=>list.addEventListener(ev,()=>{
+    if(!src) return;
+    const from=rows.indexOf(src), to=placed<0?from:placed;
+    rows.forEach(r=>{ r.classList.remove('drag','shift'); r.style.transform=''; });
+    src=null;
+    if(to!==from){
+      const i=S.objectives.findIndex(o=>o.id===srcId);
+      if(i>=0){
+        const [o]=S.objectives.splice(i,1);
+        S.objectives.splice(clamp(to,0,S.objectives.length),0,o);
+        A.tick(); buzz(14); pushLog('tributary shafts re-sequenced');
+        renderStrike(); renderCharge(); renderAdvisory(); renderProcessor(); persist();
+      }
+    }
+  }));
+})();
+
+/* ---- swipe between the two stations ---- */
+(function(){
+  let x0=0, y0=0, live=false;
+  const target=document.querySelector('.bridge');
+  if(!target) return;
+  target.addEventListener('touchstart',e=>{
+    if(e.touches.length!==1) return;
+    x0=e.touches[0].clientX; y0=e.touches[0].clientY; live=true;
+  },{passive:true});
+  target.addEventListener('touchend',e=>{
+    if(!live) return; live=false;
+    const t=e.changedTouches[0], dx=t.clientX-x0, dy=t.clientY-y0;
+    if(Math.abs(dx)<64 || Math.abs(dx)<Math.abs(dy)*1.6) return;   // let vertical scroll win
+    A.unlock(); A.tick(); buzz(10);
+    setMode(dx<0?'debt':'focus');
+  },{passive:true});
+})();
 $('abort').addEventListener('click',abort);
 $('hold').addEventListener('click',toggleHold);
 $('s-est').addEventListener('keydown',e=>{ if(e.key==='Enter') addObjective(); });
@@ -2607,6 +2967,7 @@ $('depth').addEventListener('click',e=>{
   $('depth-label').textContent=DEPTH_LABEL[S.depth]; A.tick(); persist();
 });
 $('strike-list').addEventListener('click',e=>{
+  if(e.target.closest('.sk-grip')) return;   // the grip is for dragging, not ticking off
   const sp=e.target.closest('[data-split]');
   if(sp){ e.stopPropagation(); splitObjective(sp.dataset.split); return; }
   const d=e.target.closest('[data-sdel]');
@@ -2621,7 +2982,7 @@ $('intel-list').addEventListener('click',e=>{
 $('d-add').addEventListener('click',addDebt);
 $('panel-debt').addEventListener('keydown',e=>{ if(e.key==='Enter'&&e.target.tagName==='INPUT') addDebt(); });
 $('durations').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b||b.disabled) return;
-  S.minutes=parseFloat(b.dataset.min); renderAdvisory();
+  S.minutes=parseFloat(b.dataset.min); renderAdvisory(); dialPaint();
   document.querySelectorAll('#durations button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
   A.tick(); persist(); });
 $('strategy').addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return;
@@ -2661,11 +3022,16 @@ addEventListener('keydown',e=>{
     e.preventDefault(); $('record').classList.remove('on'); return; }
   const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
   if(e.key===' ' && !typing && S.phase==='READY'){
-    e.preventDefault(); A.unlock(); S.mode==='focus'?focusFire():debtFire(); }
+    e.preventDefault();
+    if($('cover').classList.contains('unlocked')) openGuard();   // guard first
+    else if(!e.repeat) holdStart();                              // then hold it down
+  }
   else if(e.key==='Escape' && S.phase==='CHARGING' && S.mode==='focus'){ e.preventDefault(); abort(); }
   else if((e.key==='m'||e.key==='M') && !typing){
     e.preventDefault(); A.unlock(); A.tick(); setMode(S.mode==='focus'?'debt':'focus'); }
 });
+addEventListener('keyup',e=>{ if(e.key===' ') holdCancel(); });
+addEventListener('blur',holdCancel);   // alt-tabbing away must not leave it arming
 
 /* ================= BOOT SEQUENCE ================= */
 const BOOT=[
@@ -2710,6 +3076,7 @@ function runBoot(done){
     if(saved.minutes) S.minutes=saved.minutes;
     if(saved.strategy) S.strategy=saved.strategy;
     document.querySelectorAll('#durations button').forEach(x=>x.setAttribute('aria-pressed',String(parseFloat(x.dataset.min)===S.minutes)));
+    dialPaint();
     document.querySelectorAll('#strategy button').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.strat===S.strategy)));
   }
   S.lastExport=(saved&&saved.lastExport)||0;
