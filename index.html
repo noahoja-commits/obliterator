@@ -783,7 +783,11 @@ const S = {
   sessionStart:Date.now(), litShafts:-1, critical:false, booted:false,
   objectives:[], intel:[], paused:false, surged:false,
   log:[], t0:0, checkpoint:0, depth:3,
-  queue:[], deferred:[]
+  queue:[], deferred:[], lastExport:0,
+  /* deadline is the source of truth for the countdown — S.left is derived from
+     it. Decrementing S.left per tick drifts badly on iOS, which throttles and
+     then suspends timers whenever the app is backgrounded or the screen locks. */
+  deadline:0
 };
 const V = {                       // live visual state
   rot:0, rotVel:.0022, aimLock:false, aimTarget:0,
@@ -801,7 +805,15 @@ function craterFromSeed(seed){
 }
 function cratersFor(d){ return (d.craters||[]).slice(-14).map(craterFromSeed); }
 async function persist(){ await Store.save({kills:S.kills,debts:S.debts,mode:S.mode,
-  minutes:S.minutes,strategy:S.strategy,allTime:S.allTime,intel:S.intel,log:S.log,depth:S.depth,queue:S.queue,deferred:S.deferred}); }
+  minutes:S.minutes,strategy:S.strategy,allTime:S.allTime,intel:S.intel,log:S.log,depth:S.depth,queue:S.queue,deferred:S.deferred,
+  lastExport:S.lastExport||0,
+  /* A live session is worth saving on its own: reload the tab or let iOS evict
+     it and an AI breakdown you just generated would otherwise be gone. */
+  session: S.mode==='focus'&&S.phase!=='IDLE' ? {
+    name:S.name, code:S.code, phase:S.phase, total:S.total, left:S.left,
+    deadline:S.deadline, t0:S.t0, checkpoint:S.checkpoint,
+    surged:S.surged, paused:S.paused, objectives:S.objectives
+  } : null }); }
 
 /* firing solution: objectives if defined, otherwise the reactor alone */
 function solutionPct(){
@@ -1411,8 +1423,20 @@ let AI_OK=true;
    Whichever is available wins, so one build works everywhere. */
 const KEY_STORE='obliterator:key';
 function userKey(){ try{ return localStorage.getItem(KEY_STORE)||''; }catch(e){ return ''; } }
+/* Route 2 below is an unauthenticated direct call. It only works inside a Claude
+   artifact, where Claude signs the request for us. Deployed, it fails every
+   time and just adds a round trip before the proxy — so only try it in a place
+   where it can actually succeed. Artifacts run sandboxed in an iframe and get
+   window.storage injected; a deployed PWA is top-level and has neither. */
+function inArtifact(){
+  try{
+    if(window.storage && typeof window.storage.get==='function') return true;
+    if(window.top !== window.self) return true;
+    return /(^|\.)claude(usercontent)?\.(ai|com)$/.test(location.hostname);
+  }catch(e){ return true; }   // cross-origin frame access throws — that's an iframe
+}
 async function ask(prompt,maxTokens){
-  const body=JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:maxTokens||900,
+  const body=JSON.stringify({ model:"claude-sonnet-5", max_tokens:maxTokens||900,
     messages:[{role:"user",content:prompt}] });
   const k=userKey();
   const routes=[];
@@ -1420,7 +1444,7 @@ async function ask(prompt,maxTokens){
     "Content-Type":"application/json", "x-api-key":k,
     "anthropic-version":"2023-06-01",
     "anthropic-dangerous-direct-browser-access":"true" }});
-  routes.push({url:"https://api.anthropic.com/v1/messages", headers:{"Content-Type":"application/json"}});
+  if(inArtifact()) routes.push({url:"https://api.anthropic.com/v1/messages", headers:{"Content-Type":"application/json"}});
   routes.push({url:"./api/ai", headers:{"Content-Type":"application/json"}});
   let last=null;
   for(const r0 of routes){
@@ -1491,7 +1515,7 @@ Respond with ONLY a JSON array, no markdown or commentary:
         est:Number(o.est)>0?Math.round(Number(o.est)):0, actualSec:0 });
       added++;
     }
-    A.clunk(); renderStrike(); renderCharge(); renderAdvisory(); renderProcessor();
+    A.clunk(); renderStrike(); renderCharge(); renderAdvisory(); renderProcessor(); persist();
     pushLog('target decomposed · '+added+' shafts assigned');
     aiDone(btn,note,`${added} step${added===1?'':'s'} assigned. Edit or delete any of them.`);
   }catch(e){ aiDone(btn,note,aiFail(e),true); }
@@ -1525,7 +1549,7 @@ Respond with ONLY a JSON array:
       done:false, est:Number(k.est)>0?Math.round(Number(k.est)):0, actualSec:0 }));
     if(!kids.length) throw new Error('empty');
     S.objectives.splice(i,1,...kids);
-    A.clunk(); renderStrike(); renderCharge(); renderAdvisory();
+    A.clunk(); renderStrike(); renderCharge(); renderAdvisory(); persist();
     pushLog('shaft subdivided');
     aiDone(btn,note,`Split into ${kids.length} smaller actions.`);
   }catch(e){ aiDone(btn,note,aiFail(e),true); }
@@ -1690,7 +1714,23 @@ function exportBackup(){
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
     $('rec-io').className='ai-note'; $('rec-io').textContent='Backup downloaded.';
+    S.lastExport=Date.now(); persist();
   }catch(e){ $('rec-io').className='ai-note err'; $('rec-io').textContent='Export failed: '+e.message; }
+}
+
+/* iOS clears site storage after roughly a week unused, and the campaign record
+   is the only thing here that can't be recreated. Ask for persistent storage,
+   and nudge toward the export button when the record has grown since the last one. */
+function nagBackup(quiet){
+  if(navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(()=>{});
+  if(!S.kills.length) return;
+  const days=S.lastExport?(Date.now()-S.lastExport)/86400000:Infinity;
+  if(days<14) return;
+  pushLog('backup overdue · campaign record at risk');
+  if(quiet) return;
+  say(S.lastExport
+    ? `Campaign record is ${S.kills.length} strong and hasn't been backed up in ${Math.floor(days)} days. Export it under ▤ Record.`
+    : `Campaign record is ${S.kills.length} strong with no backup yet. Export it under ▤ Record — iOS clears storage after about a week unused.`,'bad');
 }
 function importBackup(file){
   const fr=new FileReader();
@@ -2070,7 +2110,7 @@ function addObjective(){
   const est=parseFloat($('s-est').value);
   S.objectives.push({id:'o'+Date.now()+Math.floor(Math.random()*999),text:v,done:false,
     est:isFinite(est)&&est>0?est:0, actualSec:0});
-  $('s-new').value=''; $('s-est').value=''; A.tick(); renderStrike(); renderCharge(); renderAdvisory(); renderProcessor();
+  $('s-new').value=''; $('s-est').value=''; A.tick(); renderStrike(); renderCharge(); renderAdvisory(); renderProcessor(); persist();
 }
 function toggleObjective(id){
   const o=S.objectives.find(x=>x.id===id); if(!o) return;
@@ -2078,13 +2118,14 @@ function toggleObjective(id){
   if(o.done && S.checkpoint){                 // time since the last checkoff belongs to this step
     o.actualSec=Math.round((Date.now()-S.checkpoint)/1000); S.checkpoint=Date.now();
   }
-  renderStrike(); renderCharge(); renderAdvisory(); renderProcessor();
+  renderStrike(); renderCharge(); renderAdvisory(); renderProcessor(); persist();
   if(!o.done){ A.tick(); return; }
   const i=S.objectives.indexOf(o); A.blip(i);
   const all=S.objectives.every(x=>x.done);
   if(all && S.phase==='CHARGING' && S.left>0 && !S.surged){
     // finishing the work early surges the reactor — the wait shrinks
     S.surged=true; const saved=Math.floor(S.left/2); S.left-=saved;
+    if(S.deadline) S.deadline-=saved*1000;   // the deadline is what the tick reads
     A.clunk(); pushLog('FIRING SOLUTION ACHIEVED · reactor surge');
     say(`Firing solution achieved early. Reactor surge — ${mmss(saved)} cut from the countdown.`,'hot');
   } else if(all){ checkArm(); }
@@ -2219,10 +2260,13 @@ function grazeShot(newScale){
 }
 
 /* ================= MODE: OBLITERATOR ================= */
+/* Derived from the wall clock, never decremented. If the OS suspended us for
+   ten minutes, the next tick reflects that instead of silently running long. */
 function tickFocus(){
-  S.left--;
+  if(!S.deadline) return;
+  S.left=Math.max(0,Math.round((S.deadline-Date.now())/1000));
   $('t-integ').textContent=Math.round((S.left/S.total)*100)+'%';
-  if(S.left<=0){ S.left=0; clearInterval(S.tick); S.tick=null; checkArm(); }
+  if(S.left<=0){ S.left=0; S.deadline=0; clearInterval(S.tick); S.tick=null; checkArm(); }
   renderCharge();
 }
 function focusAcquire(){
@@ -2230,6 +2274,7 @@ function focusAcquire(){
   if(!v){ say('Designation required. Name one target.','bad'); $('target').focus(); return; }
   A.unlock();
   S.name=v; S.code=designation(); S.total=Math.round(S.minutes*60); S.left=S.total;
+  S.deadline=Date.now()+S.left*1000;
   S.phase='CHARGING'; S.litShafts=-1;
   V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.craters=[];
   V.fleet=S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() }));
@@ -2245,6 +2290,7 @@ function focusAcquire(){
   pushLog(`target ${S.code} designated`);
   renderCharge();
   S.tick=setInterval(tickFocus,1000);
+  persist();
 }
 function focusFire(){
   fireSequence(()=>{
@@ -2356,7 +2402,7 @@ function logSession(outcome){
 }
 function resetWeapon(keepMsg){
   clearInterval(S.tick); S.tick=null;
-  S.phase='IDLE'; S.name=''; S.code=''; S.total=0; S.left=0; S.charge=0; S.litShafts=-1;
+  S.phase='IDLE'; S.name=''; S.code=''; S.total=0; S.left=0; S.deadline=0; S.charge=0; S.litShafts=-1;
   A.stopHum(); A.klaxon(false); S.critical=false; $('critband').classList.remove('on');
   V.aimLock=false; V.manual=false; V.reticle=0; V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.beam=0; V.impact=0;
   V.craters=[]; V.fleet=[];
@@ -2370,18 +2416,70 @@ function resetWeapon(keepMsg){
   renderCharge();
   if(!keepMsg) say('Awaiting target designation.');
 }
+
+/* Put a saved session back on screen. Must run AFTER setMode, because
+   setMode('focus') calls resetWeapon() and would wipe whatever we restored. */
+function restoreSession(sess){
+  if(!sess||!sess.name||!sess.total||S.mode!=='focus') return false;
+  S.name=sess.name; S.code=sess.code||designation();
+  S.total=sess.total||0; S.surged=!!sess.surged;
+  S.t0=sess.t0||0; S.checkpoint=sess.checkpoint||0;
+  S.objectives=Array.isArray(sess.objectives)?sess.objectives:[];
+
+  if(sess.phase==='HOLD'){
+    S.phase='HOLD'; S.paused=true; S.deadline=0; S.left=Math.max(0,sess.left||0);
+  } else {
+    S.phase='CHARGING'; S.paused=false;
+    S.deadline=sess.deadline||0;
+    S.left=S.deadline?Math.max(0,Math.round((S.deadline-Date.now())/1000)):Math.max(0,sess.left||0);
+  }
+
+  $('target').value=S.name; $('target').disabled=true;
+  $('abort').disabled=false; $('hold').disabled=false;
+  $('hold').textContent=S.phase==='HOLD'?'Resume · restart reactor':'Hold · pause reactor';
+  document.querySelectorAll('#durations button').forEach(b=>b.disabled=true);
+  $('t-desig').textContent=S.code;
+  $('t-class').textContent='TERRESTRIAL';
+  $('t-mass').textContent=(rand(4.2,7.9)).toFixed(2)+'e24 KG';
+  $('t-integ').textContent=Math.round((S.left/S.total)*100)+'%';
+  V.planetAlive=true; V.planetOpacity=1; V.planetR=1; V.craters=[];
+  V.fleet=S.queue.slice(0,4).map((q,i)=>({ r:8+((3-i)*2.4), label:q.name.slice(0,16).toUpperCase() }));
+  aimAt();
+  renderStrike(); renderCharge(); renderAdvisory(); renderProcessor();
+
+  if(S.phase==='HOLD'){
+    say(`Session restored — ${S.code} still on hold. ${mmss(S.left)} of charge preserved.`);
+    pushLog('session restored · reactor on hold');
+  } else if(S.left<=0){
+    // the countdown ran out while the app was closed; arm rather than pretend
+    S.deadline=0;
+    pushLog('session restored · reactor reached capacity while away');
+    checkArm();
+  } else {
+    A.startHum();
+    S.tick=setInterval(tickFocus,1000);
+    say(`Session restored. ${S.code} still charging — ${mmss(S.left)} remaining.`);
+    pushLog('session restored · '+S.code);
+  }
+  persist();   // setMode() ran resetWeapon() just before us and saved an empty session
+  return true;
+}
 function toggleHold(){
   if(S.mode!=='focus') return;
   if(S.phase==='CHARGING'){
     clearInterval(S.tick); S.tick=null; S.phase='HOLD'; S.paused=true;
+    S.left=Math.max(0,Math.round((S.deadline-Date.now())/1000)); S.deadline=0;
     A.stopHum(); A.klaxon(false); $('critband').classList.remove('on'); S.critical=false;
     $('hold').textContent='Resume · restart reactor';
     say('Reactor on hold. Charge preserved.','bad'); pushLog('REACTOR HOLD');
+    persist();
   } else if(S.phase==='HOLD'){
     S.phase='CHARGING'; S.paused=false; A.startHum();
+    S.deadline=Date.now()+S.left*1000;
     $('hold').textContent='Hold · pause reactor';
     say('Reactor restarted. Resuming charge.'); pushLog('reactor resumed');
     S.tick=setInterval(tickFocus,1000);
+    persist();
   }
 }
 function abort(){
@@ -2486,7 +2584,7 @@ $('strike-list').addEventListener('click',e=>{
   const sp=e.target.closest('[data-split]');
   if(sp){ e.stopPropagation(); splitObjective(sp.dataset.split); return; }
   const d=e.target.closest('[data-sdel]');
-  if(d){ S.objectives=S.objectives.filter(o=>o.id!==d.dataset.sdel); renderStrike(); renderCharge(); return; }
+  if(d){ S.objectives=S.objectives.filter(o=>o.id!==d.dataset.sdel); renderStrike(); renderCharge(); persist(); return; }
   const t=e.target.closest('[data-tog]'); if(t) toggleObjective(t.dataset.tog);
 });
 $('intel-list').addEventListener('click',e=>{
@@ -2588,6 +2686,7 @@ function runBoot(done){
     document.querySelectorAll('#durations button').forEach(x=>x.setAttribute('aria-pressed',String(parseFloat(x.dataset.min)===S.minutes)));
     document.querySelectorAll('#strategy button').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.strat===S.strategy)));
   }
+  S.lastExport=(saved&&saved.lastExport)||0;
   S.intel=Array.isArray(saved&&saved.intel)?saved.intel:[];
   S.log=Array.isArray(saved&&saved.log)?saved.log:[];
   if(saved&&saved.depth) S.depth=saved.depth;
@@ -2601,20 +2700,51 @@ function runBoot(done){
   const urlMode=new URLSearchParams(location.search).get('mode');
   runBoot(()=>{
     setMode(urlMode==='debt'?'debt':(urlMode==='focus'?'focus':(saved&&saved.mode==='debt'?'debt':'focus')));
+    const resumed=restoreSession(saved&&saved.session);
     renderCharge();
     const due=S.deferred.filter(d=>dayDiff(d.due)<=0);
     if(due.length){
       say(`${due.length} scheduled strike${due.length===1?'':'s'} ready — see scheduled bombardment.`,'hot');
       pushLog(due.length+' scheduled strike(s) came due');
     }
+    // last, and only if it won't talk over something more urgent
+    nagBackup(resumed||due.length>0);
   });
 })();
+
+/* ---- catch up after the OS suspends us ----
+   iOS throttles then stops timers for a backgrounded app. Ticking on the way
+   back in means the clock is right the moment you look at it, not a second later.
+   Lives inside the module closure — S and tickFocus are not globals. */
+addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible') return;
+  if(S.mode==='focus' && S.phase==='CHARGING' && S.deadline) tickFocus();
+});
+
+/* test hook — inert in the browser, lets the jsdom harness drive the real code */
+if(typeof window!=='undefined' && window.__OBLITERATOR_TEST__)
+  window.__app={S,V,focusAcquire,tickFocus,toggleHold,toggleObjective,persist,restoreSession,inArtifact,resetWeapon};
 })();
 
 /* ---- PWA registration ---- */
 if('serviceWorker' in navigator && location.protocol==='https:'){
   addEventListener('load',()=>{
-    navigator.serviceWorker.register('sw.js').catch(()=>{ /* offline support simply unavailable */ });
+    navigator.serviceWorker.register('sw.js').then(reg=>{
+      /* Without this, a new worker installs and then waits forever — an installed
+         iOS PWA only closes when you swipe it away, so deploys never land and
+         you end up deleting the Home Screen icon to pick them up. */
+      let reloading=false;
+      navigator.serviceWorker.addEventListener('controllerchange',()=>{
+        if(reloading) return; reloading=true; location.reload();
+      });
+      reg.addEventListener('updatefound',()=>{
+        const next=reg.installing; if(!next) return;
+        next.addEventListener('statechange',()=>{
+          // controller check: on a first-ever install there is nothing to replace
+          if(next.state==='installed' && navigator.serviceWorker.controller) next.postMessage('skipWaiting');
+        });
+      });
+    }).catch(()=>{ /* offline support simply unavailable */ });
   });
 }
 </script>
