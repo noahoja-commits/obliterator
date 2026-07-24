@@ -6,3 +6,5 @@ node_modules/
 .DS_Store
 .vercel
 .env*
+test/package-lock.json
+test/_ai_under_test.mjs

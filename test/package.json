@@ -1,0 +1,12 @@
+{
+  "name": "obliterator-tests",
+  "private": true,
+  "description": "Regression suite for ../index.html and ../api/ai.js. Deliberately lives here, not at the repo root: a root package.json would change how Vercel builds an otherwise static site.",
+  "scripts": {
+    "pretest": "cp ../api/ai.js ./_ai_under_test.mjs",
+    "test": "node test.js && node tabs.test.js && node ui.test.js && node proxy.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.0"
+  }
+}
